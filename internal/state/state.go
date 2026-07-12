@@ -105,11 +105,22 @@ func (s *Store) SetCert(fqdn string, cs model.CertState, certErr string) error {
 }
 
 // ReplaceAll atomically replaces the full entry set (used by /sync-all after a
-// successful swap) and advances the snapshot generation.
+// successful swap) and advances the snapshot generation. FQDNs pruned by the sync
+// keep a present=false tombstone with their last generation — forgetting it would
+// let a later stale PRESENT for a reused FQDN slip past the generation guard.
 func (s *Store) ReplaceAll(entries map[string]Entry, snapshotGen int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Entries = entries
+	merged := make(map[string]Entry, len(entries)+len(s.Entries))
+	for fqdn, old := range s.Entries {
+		if _, keep := entries[fqdn]; !keep {
+			merged[fqdn] = Entry{Generation: old.Generation, Present: false, AppliedAt: time.Now()}
+		}
+	}
+	for fqdn, e := range entries {
+		merged[fqdn] = e
+	}
+	s.Entries = merged
 	s.snapshotGen = snapshotGen
 	return s.persistLocked()
 }
