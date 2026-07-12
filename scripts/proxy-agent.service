@@ -31,12 +31,13 @@ PrivateTmp=true
 ProtectSystem=full
 ReadWritePaths=/etc/nginx/pickle.d /var/lib/pickle-proxy-agent
 ReadWritePaths=-/etc/letsencrypt -/var/www/certbot
-# CAP_DAC_OVERRIDE is required: `nginx -s reload` re-opens the error log, which is
-# www-data:adm 0640 on Debian — root without DAC override gets EACCES and the reload
-# (thus every route apply) fails. Verified live 2026-07-13: an empty bounding set
-# broke apply with "open() /var/log/nginx/error.log failed (13)". The uid-0→uid-0
-# SIGHUP itself needs no capability.
-CapabilityBoundingSet=CAP_DAC_OVERRIDE
+# The bounding set cannot be empty — both verified live 2026-07-13 by broken applies:
+#  - CAP_DAC_OVERRIDE: `nginx -s reload`/-t re-open the error log (www-data:adm 0640
+#    on Debian); root without DAC override gets EACCES ("open() error.log failed (13)").
+#  - CAP_NET_BIND_SERVICE: `nginx -t` test-binds the listen sockets, and :80/:443 are
+#    privileged ports ("bind() to 0.0.0.0:80 failed (13)").
+# The uid-0→uid-0 SIGHUP itself needs no capability.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 RestrictSUIDSGID=true
