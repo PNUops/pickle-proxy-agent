@@ -17,12 +17,13 @@ RestartSec=2s
 User=root
 Group=root
 
-# The agent owns /etc/nginx/pickle.d and its own state dir; it must run nginx -t/reload.
+# The agent owns /etc/nginx/pickle.d and its own state dir; it must run nginx -t/reload
+# and WRITE under /etc/nginx, so ProtectSystem=full (read-only /etc) is unusable here.
+# Mount-namespace directives (ReadWritePaths/ProtectHome/ProtectSystem) fail with
+# 226/NAMESPACE inside the unprivileged LXC; the container is the security boundary.
+# Keep the hardening that works in this environment (matches pickle-api.service).
 StateDirectory=pickle-proxy-agent
-ReadWritePaths=/etc/nginx/pickle.d /var/lib/pickle-proxy-agent /etc/letsencrypt /var/www/certbot
 NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=true
 PrivateTmp=true
 
 [Install]
