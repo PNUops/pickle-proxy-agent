@@ -9,7 +9,10 @@
 //   - apply/sync are all-or-nothing: on nginx -t / reload failure the previous file
 //     state is restored and the running nginx is never reloaded onto a bad candidate;
 //   - /sync-all is authoritative: agent-managed files absent from the manifest are
-//     pruned. The agent touches only /etc/nginx/pickle.d/*.conf.
+//     pruned (their generation is kept as a tombstone), but it never regresses an
+//     FQDN whose applied generation is newer than the manifest's — a resync racing a
+//     concurrent /apply keeps the newer vhost. The agent touches only
+//     /etc/nginx/pickle.d/*.conf.
 package manager
 
 import (
@@ -165,10 +168,18 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 		return 409, model.SyncAllResult{Applied: false, SnapshotGeneration: last}
 	}
 
+	// Snapshot the current agent-managed tree up front: it is the rollback backup
+	// on failure and supplies the live content for FQDNs the stale guard keeps.
+	prior, err := readConfDir(m.dir)
+	if err != nil {
+		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: err.Error()}
+	}
+
 	// Render every entry up front; any validation/render error aborts before touching disk.
 	desired := make(map[string]string, len(req.Routes)) // filename -> content
 	newEntries := make(map[string]state.Entry, len(req.Routes))
 	pendingCustom := make([]model.Route, 0)
+	staleKept := map[string]bool{} // FQDNs where the newer applied state was kept
 	for _, r := range req.Routes {
 		if r.DesiredState == model.Absent {
 			// A snapshot lists what should exist; ABSENT entries are simply omitted.
@@ -177,15 +188,31 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 		if err := render.Validate(r); err != nil {
 			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: r.FQDN + ": " + err.Error()}
 		}
+		fn := render.FileName(r.FQDN)
+		if _, dup := desired[fn]; dup {
+			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: "duplicate fqdn " + r.FQDN}
+		}
+		// Per-FQDN stale guard (mirrors /apply): a manifest older than the applied
+		// generation — a resync racing a concurrent /apply — must not regress the
+		// FQDN. Keep the newer applied vhost (and its entry) live instead.
+		if applied, known := m.store.Generation(r.FQDN); known && r.Generation < applied {
+			cur, _ := m.store.Get(r.FQDN)
+			if cur.Present {
+				if content, ok := prior[fn]; ok {
+					desired[fn] = string(content)
+				} else {
+					cur.Present = false // drift: entry said present but no file to keep
+				}
+			}
+			newEntries[r.FQDN] = cur
+			staleKept[r.FQDN] = true
+			continue
+		}
 		certPath, keyPath := render.CertPaths(r, m.params, m.leDir)
 		certReady := render.IsPlatform(r.CertRef) || m.certbot.Exists(r.FQDN)
 		content, err := render.Render(r, m.params, certPath, keyPath, certReady)
 		if err != nil {
 			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: r.FQDN + ": " + err.Error()}
-		}
-		fn := render.FileName(r.FQDN)
-		if _, dup := desired[fn]; dup {
-			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: "duplicate fqdn " + r.FQDN}
 		}
 		desired[fn] = content
 		cs := model.CertState("")
@@ -199,12 +226,7 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 		newEntries[r.FQDN] = state.Entry{Generation: r.Generation, Present: true, AppliedAt: m.now(), CertState: cs}
 	}
 
-	// Snapshot the current agent-managed tree so we can restore on failure, and
-	// compute the prune set (agent-managed files not in the manifest).
-	prior, err := readConfDir(m.dir)
-	if err != nil {
-		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: err.Error()}
-	}
+	// Compute the prune set (agent-managed files not in the manifest).
 	var pruned []string
 	for fn := range prior {
 		if _, keep := desired[fn]; !keep {
@@ -233,7 +255,9 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 
 	results := make([]model.FQDNResult, 0, len(newEntries))
 	for fqdn, e := range newEntries {
-		results = append(results, model.FQDNResult{FQDN: fqdn, Applied: true, Generation: e.Generation})
+		// A stale-guarded FQDN was not applied; Generation reports the newer
+		// applied one, exactly like /apply's 409 body.
+		results = append(results, model.FQDNResult{FQDN: fqdn, Applied: !staleKept[fqdn], Generation: e.Generation})
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].FQDN < results[j].FQDN })
 	m.recordSync(true, "sync-all", "")

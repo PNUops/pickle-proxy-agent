@@ -172,9 +172,67 @@ func TestSyncAllPrunesStaleFiles(t *testing.T) {
 	if len(res.Pruned) != 1 || res.Pruned[0] != "stale.pickle.pnuops.com" {
 		t.Fatalf("pruned = %v, want [stale...]", res.Pruned)
 	}
-	// The pruned FQDN must be gone from persisted state too.
-	if _, known := h.st.Generation("stale.pickle.pnuops.com"); known {
-		t.Fatal("pruned FQDN still in state after sync-all")
+	// The pruned FQDN keeps a generation tombstone — that record is what rejects a
+	// later stale PRESENT for the reused FQDN.
+	gen, known := h.st.Generation("stale.pickle.pnuops.com")
+	if !known || gen != 1 {
+		t.Fatalf("pruned FQDN generation lost: gen=%d known=%v, want 1,true", gen, known)
+	}
+}
+
+func TestSyncAllDoesNotRegressNewerGeneration(t *testing.T) {
+	h := newHarness(t)
+	// A concurrent /apply moved the FQDN to gen 5 (new port/IP) …
+	_, _ = h.mgr.Apply(context.Background(), platformRoute("race.pickle.pnuops.com", 5, "172.29.4.11"))
+
+	// … then a resync arrives whose manifest still carries gen 3 (older target).
+	code, res := h.mgr.SyncAll(context.Background(), model.SyncAllRequest{SnapshotGeneration: 30, Routes: []model.Route{
+		platformRoute("race.pickle.pnuops.com", 3, "172.29.4.99"),
+	}})
+	if code != 200 || !res.Applied {
+		t.Fatalf("sync-all => %d %+v", code, res)
+	}
+	// The newer applied vhost must stay live, unpruned, at gen 5.
+	if got := h.readConf(t, "race.pickle.pnuops.com"); !strings.Contains(got, "172.29.4.11") || strings.Contains(got, "172.29.4.99") {
+		t.Fatalf("sync-all regressed the vhost to the older manifest:\n%s", got)
+	}
+	if gen, _ := h.st.Generation("race.pickle.pnuops.com"); gen != 5 {
+		t.Fatalf("generation regressed: %d, want 5", gen)
+	}
+	if len(res.Pruned) != 0 {
+		t.Fatalf("stale-guarded FQDN was pruned: %v", res.Pruned)
+	}
+	if len(res.Results) != 1 || res.Results[0].Applied || res.Results[0].Generation != 5 {
+		t.Fatalf("results = %+v, want applied=false gen=5", res.Results)
+	}
+	// The snapshot generation still advances (the monotonic guard is kept).
+	if h.st.SnapshotGeneration() != 30 {
+		t.Fatalf("snapshot gen = %d, want 30", h.st.SnapshotGeneration())
+	}
+}
+
+func TestSyncAllPrunedFqdnStillRejectsStalePresent(t *testing.T) {
+	h := newHarness(t)
+	_, _ = h.mgr.Apply(context.Background(), platformRoute("reused.pickle.pnuops.com", 4, "172.29.4.11"))
+
+	// Sync-all prunes it (VM deleted; manifest no longer lists it).
+	if code, _ := h.mgr.SyncAll(context.Background(), model.SyncAllRequest{SnapshotGeneration: 40, Routes: nil}); code != 200 {
+		t.Fatalf("sync-all code %d", code)
+	}
+	if _, err := os.Stat(h.confPath("reused.pickle.pnuops.com")); !os.IsNotExist(err) {
+		t.Fatal("sync-all did not prune the vhost")
+	}
+	// A late stale PRESENT (gen ≤ 4) must not resurrect the vhost onto a reused IP.
+	code, res := h.mgr.Apply(context.Background(), platformRoute("reused.pickle.pnuops.com", 4, "172.29.9.99"))
+	if code != 409 || res.Generation != 4 {
+		t.Fatalf("stale PRESENT after prune => %d %+v, want 409 gen=4", code, res)
+	}
+	if _, err := os.Stat(h.confPath("reused.pickle.pnuops.com")); !os.IsNotExist(err) {
+		t.Fatal("stale PRESENT resurrected a pruned vhost")
+	}
+	// A genuinely newer generation is still accepted.
+	if code, _ := h.mgr.Apply(context.Background(), platformRoute("reused.pickle.pnuops.com", 5, "172.29.4.22")); code != 200 {
+		t.Fatalf("newer-gen apply after prune code %d", code)
 	}
 }
 

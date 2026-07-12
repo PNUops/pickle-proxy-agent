@@ -52,13 +52,32 @@ func TestSnapshotGenerationAndReplaceAll(t *testing.T) {
 	if s.SnapshotGeneration() != 100 {
 		t.Fatalf("snapshot gen = %d, want 100", s.SnapshotGeneration())
 	}
-	// ReplaceAll is authoritative: entries not in the new set are gone.
-	if _, known := s.Generation("old.com"); known {
-		t.Fatal("ReplaceAll should have dropped unknown entries")
-	}
 	s2, _ := Load(path)
 	if s2.SnapshotGeneration() != 100 {
 		t.Fatalf("snapshot gen not persisted: %d", s2.SnapshotGeneration())
+	}
+}
+
+func TestReplaceAllKeepsPrunedGenerationTombstone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, _ := Load(path)
+	_ = s.Record("pruned.com", Entry{Generation: 7, Present: true})
+	_ = s.Record("kept.com", Entry{Generation: 2, Present: true})
+
+	// pruned.com is absent from the sync-all set: its generation must survive as a
+	// present=false tombstone so a later stale PRESENT is still rejected.
+	_ = s.ReplaceAll(map[string]Entry{"kept.com": {Generation: 3, Present: true}}, 100)
+	e, known := s.Get("pruned.com")
+	if !known || e.Generation != 7 || e.Present {
+		t.Fatalf("tombstone = %+v known=%v, want gen=7 present=false", e, known)
+	}
+	if gen, _ := s.Generation("kept.com"); gen != 3 {
+		t.Fatalf("kept.com gen = %d, want 3", gen)
+	}
+	// The tombstone survives a restart.
+	s2, _ := Load(path)
+	if gen, known := s2.Generation("pruned.com"); !known || gen != 7 {
+		t.Fatalf("tombstone not persisted: gen=%d known=%v", gen, known)
 	}
 }
 
