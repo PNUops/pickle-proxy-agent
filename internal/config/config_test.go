@@ -9,6 +9,15 @@ func TestLoadRequiresToken(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsPlaceholderToken(t *testing.T) {
+	for _, tok := range []string{"CHANGEME", "CHANGME"} {
+		t.Setenv("PICKLE_PROXY_AGENT_TOKEN", tok)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load must reject the placeholder token %q", tok)
+		}
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("PICKLE_PROXY_AGENT_TOKEN", "tok")
 	c, err := Load()

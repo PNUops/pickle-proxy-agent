@@ -2,9 +2,10 @@
 Description=Pickle reverse-proxy control agent
 Documentation=https://github.com/pnuops/pickle-proxy-agent docs/api/internal.md
 After=network-online.target nginx.service
-Wants=network-online.target
-# nginx must be present for `nginx -t`/reload; the agent renders its config.
-Requires=nginx.service
+# Wants (not Requires): with Requires, stopping/failing nginx would kill the agent
+# and Restart= would not bring it back. The agent degrades gracefully without nginx
+# (nginx -t/reload just fail per request), so a soft dependency is correct.
+Wants=network-online.target nginx.service
 
 [Service]
 Type=simple
@@ -17,14 +18,27 @@ RestartSec=2s
 User=root
 Group=root
 
-# The agent owns /etc/nginx/pickle.d and its own state dir; it must run nginx -t/reload
-# and WRITE under /etc/nginx, so ProtectSystem=full (read-only /etc) is unusable here.
-# Mount-namespace directives (ReadWritePaths/ProtectHome/ProtectSystem) fail with
-# 226/NAMESPACE inside the unprivileged LXC; the container is the security boundary.
-# Keep the hardening that works in this environment (matches pickle-api.service).
+# Hardening. ProtectSystem=full + ReadWritePaths DO work in the unprivileged LXC —
+# the sshgw units run exactly that combination in the same environment. An earlier
+# 226/NAMESPACE here was misattributed to them; the likely culprits were ProtectHome
+# and/or ReadWritePaths entries that did not exist yet. So: no ProtectHome, and the
+# certbot paths (absent until certbot is installed) are '-'-prefixed. deploy.sh
+# pre-creates every other listed directory.
 StateDirectory=pickle-proxy-agent
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/etc/nginx/pickle.d /var/lib/pickle-proxy-agent
+ReadWritePaths=-/etc/letsencrypt -/var/www/certbot
+# nginx is reloaded via `nginx -s reload` (uid-0 signal to a uid-0 master, no
+# capability needed) and certbot/state writes are all root-owned files, so the
+# bounding set can be empty.
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+RestrictSUIDSGID=true
+# MemoryDenyWriteExecute is deliberately NOT set: its seccomp filter is inherited by
+# exec'd children, and certbot (Python/cffi) is not verified to tolerate it.
 
 [Install]
 WantedBy=multi-user.target
