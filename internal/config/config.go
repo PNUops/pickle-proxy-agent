@@ -94,8 +94,13 @@ func Load() (Config, error) {
 		RateLimitPerMin: 600,
 		ExecTimeout:     60 * time.Second,
 	}
-	if strings.TrimSpace(c.Token) == "" {
+	switch t := strings.TrimSpace(c.Token); t {
+	case "":
 		return Config{}, fmt.Errorf("PICKLE_PROXY_AGENT_TOKEN is required (empty token would leave the agent unauthenticated)")
+	case "CHANGEME", "CHANGME":
+		// Guard against booting with a template placeholder (an old deploy.sh wrote
+		// the "CHANGME" typo); a well-known token is as bad as no token.
+		return Config{}, fmt.Errorf("PICKLE_PROXY_AGENT_TOKEN is the placeholder %q; generate a real one (openssl rand -hex 32)", t)
 	}
 	return c, nil
 }
