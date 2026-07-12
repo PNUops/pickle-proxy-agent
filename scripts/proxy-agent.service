@@ -1,0 +1,29 @@
+[Unit]
+Description=Pickle reverse-proxy control agent
+Documentation=https://github.com/pnuops/pickle-proxy-agent docs/api/internal.md
+After=network-online.target nginx.service
+Wants=network-online.target
+# nginx must be present for `nginx -t`/reload; the agent renders its config.
+Requires=nginx.service
+
+[Service]
+Type=simple
+# Secrets and tuning come from an env file placed by deploy.sh (mode 0600, root).
+# It defines at least PICKLE_PROXY_AGENT_TOKEN; see credentials.md for the source.
+EnvironmentFile=/etc/pickle-proxy-agent/agent.env
+ExecStart=/usr/local/bin/pickle-proxy-agent
+Restart=always
+RestartSec=2s
+User=root
+Group=root
+
+# The agent owns /etc/nginx/pickle.d and its own state dir; it must run nginx -t/reload.
+StateDirectory=pickle-proxy-agent
+ReadWritePaths=/etc/nginx/pickle.d /var/lib/pickle-proxy-agent /etc/letsencrypt /var/www/certbot
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
