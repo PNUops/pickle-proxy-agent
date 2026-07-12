@@ -1,6 +1,7 @@
 [Unit]
 Description=Pickle reverse-proxy control agent
-Documentation=https://github.com/pnuops/pickle-proxy-agent docs/api/internal.md
+# Contract: docs/api/internal.md (workspace docs repo)
+Documentation=https://github.com/pnuops/pickle-proxy-agent
 After=network-online.target nginx.service
 # Wants (not Requires): with Requires, stopping/failing nginx would kill the agent
 # and Restart= would not bring it back. The agent degrades gracefully without nginx
@@ -30,10 +31,12 @@ PrivateTmp=true
 ProtectSystem=full
 ReadWritePaths=/etc/nginx/pickle.d /var/lib/pickle-proxy-agent
 ReadWritePaths=-/etc/letsencrypt -/var/www/certbot
-# nginx is reloaded via `nginx -s reload` (uid-0 signal to a uid-0 master, no
-# capability needed) and certbot/state writes are all root-owned files, so the
-# bounding set can be empty.
-CapabilityBoundingSet=
+# CAP_DAC_OVERRIDE is required: `nginx -s reload` re-opens the error log, which is
+# www-data:adm 0640 on Debian — root without DAC override gets EACCES and the reload
+# (thus every route apply) fails. Verified live 2026-07-13: an empty bounding set
+# broke apply with "open() /var/log/nginx/error.log failed (13)". The uid-0→uid-0
+# SIGHUP itself needs no capability.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 RestrictSUIDSGID=true
