@@ -39,7 +39,10 @@ Two vhost shapes (`docs/plan/06-domains-tls.md`):
 - **custom domains** (any other `certRef`): per-domain Let's Encrypt cert. Rendering
   is two-phase — a challenge-only `:80` vhost until certbot (webroot HTTP-01)
   issues the cert, then the full `:80`-redirect + `:8443`-HTTPS vhost. Issuance
-  failures are reported on `/status` and do not fail the apply.
+  failures are reported on `/status` and do not fail the apply. Renewals run via
+  certbot's systemd timer; `scripts/deploy.sh` installs a renewal deploy-hook
+  (`/etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh`) that reloads
+  nginx after each successful renewal so the renewed cert goes live immediately.
 
 Both proxy_pass to `http://<vm-ip>:<port>` with a shared, websocket-upgrade-aware
 proxy snippet (`Connection $connection_upgrade`, resolved via the map in
