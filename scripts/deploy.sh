@@ -43,6 +43,21 @@ scp $SSH_OPTS scripts/proxy-agent.service "$TARGET:/etc/systemd/system/pickle-pr
 # shellcheck disable=SC2086
 scp $SSH_OPTS scripts/nginx/pickle-base.conf "$TARGET:/etc/nginx/conf.d/pickle-base.conf"
 
+echo "==> installing certbot renewal deploy-hook (nginx reload on renewed cert)"
+# Certbot's systemd timer renews certs, but nginx keeps serving the old file until
+# reloaded. Certbot runs deploy-hooks only after a successful renewal, so this hook
+# is what makes a renewed custom-domain cert actually go live on a quiet system.
+# shellcheck disable=SC2086,SC2029
+ssh $SSH_OPTS "$TARGET" "install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy \
+  && printf '%s\n' \
+  '#!/bin/sh' \
+  '# Installed by pickle-proxy-agent scripts/deploy.sh. Certbot runs deploy-hooks' \
+  '# only after a successful renewal; reload nginx so the renewed certificate is' \
+  '# served immediately instead of waiting for the next apply/sync reload.' \
+  'systemctl reload nginx' \
+  > /etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh \
+  && chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh"
+
 echo "==> installing env file if absent (token must be filled in by the operator)"
 # shellcheck disable=SC2086,SC2029
 ssh $SSH_OPTS "$TARGET" "test -f $ENV_DIR/agent.env || printf '%s\n' \

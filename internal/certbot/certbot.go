@@ -5,7 +5,10 @@
 // Encrypt: the fake in tests simply materialises cert files (or reports failure). The
 // real provider shells out to certbot in --webroot mode against the same webroot the
 // challenge vhost serves, then relies on certbot's own systemd renewal timer for
-// ongoing renewals (renewal failures surface on GET /status).
+// ongoing renewals (renewal failures surface on GET /status). A renewal deploy-hook
+// installed by scripts/deploy.sh (/etc/letsencrypt/renewal-hooks/deploy/
+// pickle-nginx-reload.sh) reloads nginx after each successful renewal so the renewed
+// certificate is served without waiting for the next apply/sync.
 package certbot
 
 import (
