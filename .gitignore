@@ -1,0 +1,12 @@
+# Build output
+/proxy-agent
+/dist/
+/bin/
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Local runtime state (never committed)
+*.state.json
