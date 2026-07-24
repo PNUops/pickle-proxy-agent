@@ -1,78 +1,81 @@
 # pickle-proxy-agent
 
-Reverse-proxy control agent for Pickle. A small Go daemon that runs inside the
-`reverse-proxy` LXC (100, 172.30.1.10) and turns the desired routing state pushed by
-pickle-api into live nginx vhosts and TLS certificates. Routing truth lives in
-PostgreSQL; nginx config is a derived artifact.
+Pickle(피클)은 부산대학교 구성원을 위한 셀프서비스 클라우드 플랫폼이다. 사용자가 웹 콘솔에서
+VM을 신청하면 관리자 승인 후 Proxmox VE에 자동 프로비저닝되며, SSH 접속과 도메인 기반
+HTTP(S) 공개까지 제공한다. 이 저장소는 그중 리버스 프록시 제어 에이전트를 담당한다.
 
-## Contract
+## 역할
 
-The daemon is the **server** side of Link 2 in `docs/api/internal.md` (pickle-api →
-proxy-agent). All three endpoints require the shared bearer token
-(`PICKLE_PROXY_AGENT_TOKEN`) and a source IP on the allowlist (default pickle-api,
-172.30.1.20); everything fails closed. Reachable only on the internal bridge vmbr1.
+pickle-api가 밀어주는 "원하는 상태"(라우트와 인증서)를 받아 nginx 리버스 프록시를 그 상태에
+맞게 유지하는 작은 Go 데몬이다. 요청마다 다음을 수행한다.
 
-- `POST /apply` — full desired state for one FQDN
-  `{fqdn, desiredState: PRESENT|ABSENT, generation, targetIp, targetPort, certRef}`.
-  Renders/removes the vhost, validates with `nginx -t`, reloads. A monotonic
-  per-FQDN `generation` is persisted; a request with `generation ≤ applied` is a
-  `409` no-op, so a late retry can never resurrect an old vhost onto a reused IP.
-  `200 {applied, generation}` / `409` (stale) / `422 {applied:false, error}`.
-- `POST /sync-all` — authoritative full snapshot `{snapshotGeneration, routes[]}`.
-  Renders the whole set, `nginx -t`, atomic swap, **prunes** agent-managed vhost
-  files absent from the manifest, reloads.
-- `GET /status` — health, last apply/sync, per-FQDN applied generations, and
-  custom-domain certificate state (issuance/renewal failures surface here).
+1. nginx vhost 설정을 렌더한다.
+2. `nginx -t`로 후보 설정을 검증한다.
+3. 검증을 통과하면 nginx를 reload한다.
+4. 적용 결과와 인증서 상태를 보고한다.
 
-The agent owns exactly `/etc/nginx/pickle.d/*.conf` (one file per FQDN) and never
-touches anything else in the nginx tree (the `opus.pusan.ac.kr` config is inviolable).
-All mutations run through a single serialized queue — one render → `nginx -t` → swap
-→ reload cycle at a time; any failure restores the previous file state, so a failed
-apply leaves the live config exactly as it was.
+라우팅의 진실(source of truth)은 API 서버의 데이터베이스이며, nginx 설정은 그로부터 파생된
+산출물이다. 모든 변경은 단일 직렬 큐를 통해 한 번에 하나씩(render → `nginx -t` → 원자적 교체
+→ reload) 처리되고, 어떤 단계라도 실패하면 직전 파일 상태로 롤백하므로 실패한 적용이 살아 있는
+설정을 훼손하지 않는다.
 
-## Templates & certificates
+인증서는 두 갈래로 구분한다.
 
-Two vhost shapes (`docs/plan/06-domains-tls.md`):
+- **플랫폼 서브도메인**: 플랫폼 와일드카드 인증서(Cloudflare Origin CA)를 사용한다.
+- **사용자 커스텀 도메인**: 도메인별 Let's Encrypt 인증서를 certbot(HTTP-01, webroot)으로
+  발급/갱신한다. 발급 전에는 챌린지 전용 vhost를 먼저 올리고, 인증서가 준비되면 정식 HTTPS
+  vhost로 전환하는 2단계 렌더를 쓴다. 발급 실패는 적용을 실패시키지 않고 `/status`에 노출된다.
 
-- **platform subdomains** (`certRef == origin-wildcard`): HTTPS on the internal
-  `127.0.0.1:8443` tier using the Cloudflare Origin CA wildcard.
-- **custom domains** (any other `certRef`): per-domain Let's Encrypt cert. Rendering
-  is two-phase — a challenge-only `:80` vhost until certbot (webroot HTTP-01)
-  issues the cert, then the full `:80`-redirect + `:8443`-HTTPS vhost. Issuance
-  failures are reported on `/status` and do not fail the apply. Renewals run via
-  certbot's systemd timer; `scripts/deploy.sh` installs a renewal deploy-hook
-  (`/etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh`) that reloads
-  nginx after each successful renewal so the renewed cert goes live immediately.
+에이전트는 자신이 관리하는 vhost 파일(FQDN당 한 개)만 소유하며 nginx 트리의 다른 부분은 절대
+건드리지 않는다.
 
-Both proxy_pass to `http://<vm-ip>:<port>` with a shared, websocket-upgrade-aware
-proxy snippet (`Connection $connection_upgrade`, resolved via the map in
-`scripts/nginx/pickle-base.conf`).
+## 계약 표면
 
-## Layout
+내부 브리지 전용으로만 도달 가능한 세 개의 엔드포인트를 제공한다.
+
+- `POST /apply` — 단일 FQDN의 원하는 상태 전체를 받아 vhost를 렌더/삭제한다. FQDN별 단조
+  증가 `generation`을 영속화하여, 이미 적용된 세대 이하의 요청은 no-op(`409`)으로 처리한다.
+- `POST /sync-all` — 전체 스냅샷을 받아 세트를 통째로 다시 렌더하고, 매니페스트에 없는
+  에이전트 관리 vhost는 정리(prune)한다.
+- `GET /status` — 헬스, 마지막 apply/sync, FQDN별 적용 세대, 커스텀 도메인 인증서 상태.
+
+모든 라우트는 fail-closed로 보호된다. 공유 bearer 토큰(`PICKLE_PROXY_AGENT_TOKEN`,
+미설정 시 부팅이 fail-closed)과 소스 IP 허용 목록을 모두 통과해야 하며, 내부 브리지에서만
+접근할 수 있다.
+
+## 스택
+
+- Go 1.26 (`go.mod` 참고)
+- 표준 라이브러리만 사용, 외부 의존성 0
+
+## 레이아웃
 
 ```
-cmd/proxy-agent/      entrypoint (env config -> wire -> serve)
-internal/config/      env-sourced configuration (fails closed on empty token)
-internal/model/       wire types shared with pickle-api (frozen contract shapes)
-internal/render/      vhost template rendering + input validation
-internal/nginx/       `nginx -t` / `nginx -s reload` runner (interface + exec impl)
-internal/certbot/     webroot HTTP-01 issuance (interface + certbot exec impl)
-internal/state/       per-FQDN generation + cert state, persisted JSON
-internal/manager/     serialized apply/sync-all: render->test->swap->reload->rollback
-internal/server/      HTTP server, fail-closed auth, per-key rate limiting
-internal/fake/        test doubles for nginx/certbot (not compiled into the daemon)
-scripts/deploy.sh     build + install binary/unit/base-nginx on LXC 100 (authored,
-                      not auto-run); scripts/proxy-agent.service systemd unit
+cmd/proxy-agent/      진입점 (env 설정 → 조립 → 서비스)
+internal/config/      env 기반 설정 (토큰이 비어 있으면 fail-closed)
+internal/model/       pickle-api와 공유하는 wire 타입 (고정된 계약 형태)
+internal/render/      vhost 템플릿 렌더 + 입력 검증
+internal/nginx/       `nginx -t` / `nginx -s reload` 러너 (인터페이스 + exec 구현)
+internal/certbot/     webroot HTTP-01 발급 (인터페이스 + certbot exec 구현)
+internal/state/       FQDN별 세대 + 인증서 상태, JSON 영속화
+internal/manager/     직렬화된 apply/sync-all: render→test→swap→reload→rollback
+internal/server/      HTTP 서버, fail-closed 인증, 키별 레이트 리밋
+internal/fake/        nginx/certbot 테스트 더블 (데몬 빌드에는 포함되지 않음)
+scripts/              verify.sh, deploy.sh, systemd 유닛, nginx 베이스 설정
 ```
 
-## Build & verify
+## 빌드 & 검증
 
 ```bash
-scripts/setup-hooks.sh   # once: install git hooks
-scripts/verify.sh        # shellcheck + go vet + go build + go test
+scripts/setup-hooks.sh   # 최초 1회: git 훅 설치
+scripts/verify.sh        # shellcheck → go vet → go build → go test
 ```
 
-Go 1.26 (see `go.mod`); standard library only, no third-party dependencies.
+배포는 `scripts/deploy.sh`로 수행한다(빌드 후 대상 호스트에 바이너리/유닛/베이스 nginx 설정
+설치). 코드는 항상 gofmt 정렬 상태를 유지한다.
 
-Design: `docs/plan/06-domains-tls.md`, `01-architecture.md`, and the internal API
-contract `docs/api/internal.md` (not the public `openapi.yaml`).
+## 커밋 규약
+
+커밋 메시지는 `type: subject` 형식(영어 명령형, 72자 이내, 마침표 없음)을 따르며 git 훅이
+이를 강제한다. type은 `feat`, `fix`, `docs`, `test`, `chore`, `refactor`, `perf`,
+`build`, `style`, `ci`, `revert`, `merge` 중 하나다.

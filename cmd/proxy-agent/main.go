@@ -1,6 +1,6 @@
 // Command proxy-agent is the reverse-proxy control daemon that runs on LXC 100.
 // It receives desired routing state from pickle-api over the internal bridge and
-// renders it into nginx vhosts (docs/api/internal.md Link 2, docs/plan/06-domains-tls.md).
+// renders it into nginx vhosts.
 package main
 
 import (

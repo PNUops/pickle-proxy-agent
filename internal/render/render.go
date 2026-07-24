@@ -1,6 +1,6 @@
 // Package render turns a desired Route into the text of its nginx vhost file.
 //
-// Two shapes are produced, selected by certRef (docs/plan/06-domains-tls.md):
+// Two shapes are produced, selected by certRef:
 //
 //   - platform subdomains (certRef == origin-wildcard): a single HTTPS server on
 //     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard.

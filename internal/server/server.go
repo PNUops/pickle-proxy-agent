@@ -1,5 +1,5 @@
 // Package server exposes the agent's HTTP control surface: POST /apply,
-// POST /sync-all, GET /status (docs/api/internal.md, Link 2). Every route is behind
+// POST /sync-all, GET /status. Every route is behind
 // the fail-closed source-IP + bearer-token guard and a per-key rate limiter.
 package server
 

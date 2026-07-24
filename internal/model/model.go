@@ -1,6 +1,6 @@
 // Package model holds the wire types exchanged with pickle-api over the
-// internal reverse-proxy control link (docs/api/internal.md, Link 2). Field names
-// and JSON shapes here are the frozen contract that pickle-api's client mirrors.
+// internal reverse-proxy control link. Field names and JSON shapes here are the
+// frozen contract that pickle-api's client mirrors.
 package model
 
 import "time"

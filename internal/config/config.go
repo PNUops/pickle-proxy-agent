@@ -1,8 +1,8 @@
 // Package config loads the proxy-agent configuration from the environment.
 //
-// Every value has a production default that matches the as-built LXC 100 layout
-// (docs/plan/01-architecture.md, 06-domains-tls.md); tests override the paths and
-// binaries to point at temp dirs and fakes so nothing here needs a real nginx.
+// Every value has a production default that matches the as-built LXC 100 layout;
+// tests override the paths and binaries to point at temp dirs and fakes so nothing
+// here needs a real nginx.
 package config
 
 import (

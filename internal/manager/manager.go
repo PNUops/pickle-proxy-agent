@@ -2,7 +2,7 @@
 // mutation, renders vhosts, validates with nginx, swaps atomically, rolls back on any
 // failure, and persists the per-FQDN generation that makes stale requests a no-op.
 //
-// Correctness contract (docs/api/internal.md, Link 2):
+// Correctness contract:
 //   - all mutations run one at a time (mutateMu) — one render→test→swap→reload cycle;
 //   - a request whose generation ≤ the applied generation is rejected 409 (a late
 //     retry can never resurrect an old vhost onto a reused IP);

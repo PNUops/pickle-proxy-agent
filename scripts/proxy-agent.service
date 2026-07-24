@@ -1,6 +1,6 @@
 [Unit]
 Description=Pickle reverse-proxy control agent
-# Contract: docs/api/internal.md (workspace docs repo)
+# Applies desired routing state pushed by pickle-api (apply/sync-all/status).
 Documentation=https://github.com/pnuops/pickle-proxy-agent
 After=network-online.target nginx.service
 # Wants (not Requires): with Requires, stopping/failing nginx would kill the agent
@@ -11,7 +11,7 @@ Wants=network-online.target nginx.service
 [Service]
 Type=simple
 # Secrets and tuning come from an env file placed by deploy.sh (mode 0600, root).
-# It defines at least PICKLE_PROXY_AGENT_TOKEN; see credentials.md for the source.
+# It defines at least PICKLE_PROXY_AGENT_TOKEN.
 EnvironmentFile=/etc/pickle-proxy-agent/agent.env
 ExecStart=/usr/local/bin/pickle-proxy-agent
 Restart=always
