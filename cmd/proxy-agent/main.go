@@ -36,11 +36,10 @@ func main() {
 	}
 
 	params := render.Params{
-		HTTPSListen:   cfg.HTTPSListen,
-		WildcardCert:  cfg.WildcardCert,
-		WildcardKey:   cfg.WildcardKey,
-		Webroot:       cfg.Webroot,
-		RealIPInclude: cfg.RealIPInclude,
+		HTTPSListen:  cfg.HTTPSListen,
+		WildcardCert: cfg.WildcardCert,
+		WildcardKey:  cfg.WildcardKey,
+		Webroot:      cfg.Webroot,
 	}
 	ng := nginx.New(cfg.NginxBin, cfg.ExecTimeout)
 	cb := certbot.New(cfg.CertbotBin, cfg.Webroot, cfg.LEDir, cfg.CertbotEmail, cfg.ExecTimeout)

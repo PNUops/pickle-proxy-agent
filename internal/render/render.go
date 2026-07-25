@@ -27,19 +27,21 @@ import (
 
 // Params carries the deploy-time settings render needs that are not part of a Route.
 type Params struct {
-	HTTPSListen   string // 127.0.0.1:8443
-	WildcardCert  string
-	WildcardKey   string
-	Webroot       string
-	RealIPInclude string // "" to omit
+	HTTPSListen  string // 127.0.0.1:8443
+	WildcardCert string
+	WildcardKey  string
+	Webroot      string
 }
 
 // proxyCommon is the shared, websocket-upgrade-aware proxy block. `$connection_upgrade`
 // comes from the `map $http_upgrade $connection_upgrade` defined once in the base
-// nginx http{} context by the deploy (see scripts/nginx/pickle-base.conf).
+// nginx http{} context by the deploy (see scripts/nginx/pickle-base.conf), and
+// `$pickle_client_ip` from the operator-managed client-IP validation map described
+// in the same file: it is the peer address, except when the peer is a known CDN
+// edge, where the edge's client-IP header is trusted instead.
 const proxyCommon = `        proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Real-IP $pickle_client_ip;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
@@ -49,16 +51,15 @@ const proxyCommon = `        proxy_http_version 1.1;
 `
 
 type vhostData struct {
-	FQDN          string
-	Generation    int64
-	Kind          string
-	Target        string
-	HTTPSListen   string
-	CertPath      string
-	KeyPath       string
-	Webroot       string
-	RealIPInclude string
-	ProxyCommon   string
+	FQDN        string
+	Generation  int64
+	Kind        string
+	Target      string
+	HTTPSListen string
+	CertPath    string
+	KeyPath     string
+	Webroot     string
+	ProxyCommon string
 }
 
 var platformTmpl = template.Must(template.New("platform").Parse(
@@ -72,10 +73,12 @@ server {
     ssl_certificate     {{.CertPath}};
     ssl_certificate_key {{.KeyPath}};
 
-    real_ip_header CF-Connecting-IP;
-{{- if .RealIPInclude}}
-    include {{.RealIPInclude}};
-{{- end}}
+    # This socket's only peer is the TLS-terminating stream tier, which prepends a
+    # PROXY header carrying the true public peer; restore it into $remote_addr.
+    # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
+    # peer may be believed (both come from the base http{} wiring).
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
 
     location / {
         proxy_pass http://{{.Target}};
@@ -105,10 +108,12 @@ server {
     ssl_certificate     {{.CertPath}};
     ssl_certificate_key {{.KeyPath}};
 
-    real_ip_header CF-Connecting-IP;
-{{- if .RealIPInclude}}
-    include {{.RealIPInclude}};
-{{- end}}
+    # This socket's only peer is the TLS-terminating stream tier, which prepends a
+    # PROXY header carrying the true public peer; restore it into $remote_addr.
+    # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
+    # peer may be believed (both come from the base http{} wiring).
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
 
     location / {
         proxy_pass http://{{.Target}};
@@ -160,15 +165,14 @@ func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (
 		return "", err
 	}
 	d := vhostData{
-		FQDN:          r.FQDN,
-		Generation:    r.Generation,
-		Target:        net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
-		HTTPSListen:   p.HTTPSListen,
-		CertPath:      certPath,
-		KeyPath:       keyPath,
-		Webroot:       p.Webroot,
-		RealIPInclude: p.RealIPInclude,
-		ProxyCommon:   proxyCommon,
+		FQDN:        r.FQDN,
+		Generation:  r.Generation,
+		Target:      net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
+		HTTPSListen: p.HTTPSListen,
+		CertPath:    certPath,
+		KeyPath:     keyPath,
+		Webroot:     p.Webroot,
+		ProxyCommon: proxyCommon,
 	}
 	var tmpl *template.Template
 	switch {

@@ -9,11 +9,10 @@ import (
 
 func testParams() Params {
 	return Params{
-		HTTPSListen:   "127.0.0.1:8443",
-		WildcardCert:  "/etc/nginx/certs/origin/fullchain.pem",
-		WildcardKey:   "/etc/nginx/certs/origin/privkey.pem",
-		Webroot:       "/var/www/certbot",
-		RealIPInclude: "/etc/nginx/pickle-realip.conf",
+		HTTPSListen:  "127.0.0.1:8443",
+		WildcardCert: "/etc/nginx/certs/origin/fullchain.pem",
+		WildcardKey:  "/etc/nginx/certs/origin/privkey.pem",
+		Webroot:      "/var/www/certbot",
 	}
 }
 
@@ -33,7 +32,7 @@ func TestRenderPlatform(t *testing.T) {
 		"ssl_certificate     /etc/nginx/certs/origin/fullchain.pem;",
 		"proxy_pass http://172.29.4.11:8080;",
 		"proxy_set_header Connection $connection_upgrade;", // websocket upgrade
-		"include /etc/nginx/pickle-realip.conf;",
+		"real_ip_header proxy_protocol;",
 		"kind=platform",
 	} {
 		if !strings.Contains(out, want) {
@@ -81,13 +80,27 @@ func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 	}
 }
 
-func TestRenderOmitsRealIPIncludeWhenUnset(t *testing.T) {
+// The vhosts sit behind the TLS-terminating stream tier, whose PROXY header is the
+// only carrier of the real client address: trusting a client-IP header from the
+// loopback peer, or leaving $remote_addr as 127.0.0.1, both lose the true client.
+func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 	p := testParams()
-	p.RealIPInclude = ""
-	r := model.Route{FQDN: "x.pickle.pnuops.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcard}
-	out, _ := Render(r, p, p.WildcardCert, p.WildcardKey, true)
-	if strings.Contains(out, "include ;") || strings.Contains(out, "pickle-realip") {
-		t.Errorf("empty RealIPInclude should emit no include line:\n%s", out)
+	for _, r := range []model.Route{
+		{FQDN: "x.pickle.pnuops.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcard},
+		{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "le"},
+	} {
+		out, err := Render(r, p, "/c.pem", "/k.pem", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"set_real_ip_from 127.0.0.1;", "real_ip_header proxy_protocol;", "X-Real-IP $pickle_client_ip;"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: vhost missing %q in:\n%s", r.FQDN, want, out)
+			}
+		}
+		if strings.Contains(out, "real_ip_header CF-Connecting-IP") || strings.Contains(out, "pickle-realip") {
+			t.Errorf("%s: vhost still trusts a header from the loopback peer:\n%s", r.FQDN, out)
+		}
 	}
 }
 

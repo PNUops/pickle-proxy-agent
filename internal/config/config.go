@@ -47,11 +47,6 @@ type Config struct {
 	// stream{} block owns :443 and forwards non-passthrough SNIs here.
 	HTTPSListen string
 
-	// RealIPInclude, when non-empty, is emitted as `include <path>;` inside each
-	// vhost so the operator-managed Cloudflare set_real_ip_from list is applied
-	// without the agent having to own that file.
-	RealIPInclude string
-
 	// Custom-domain / certbot settings.
 	CertbotBin   string
 	Webroot      string
@@ -86,7 +81,6 @@ func Load() (Config, error) {
 		WildcardCert:    env("PICKLE_PROXY_AGENT_WILDCARD_CERT", "/etc/nginx/certs/origin/fullchain.pem"),
 		WildcardKey:     env("PICKLE_PROXY_AGENT_WILDCARD_KEY", "/etc/nginx/certs/origin/privkey.pem"),
 		HTTPSListen:     env("PICKLE_PROXY_AGENT_HTTPS_LISTEN", "127.0.0.1:8443"),
-		RealIPInclude:   env("PICKLE_PROXY_AGENT_REALIP_INCLUDE", "/etc/nginx/pickle-realip.conf"),
 		CertbotBin:      env("PICKLE_PROXY_AGENT_CERTBOT_BIN", "certbot"),
 		Webroot:         env("PICKLE_PROXY_AGENT_WEBROOT", "/var/www/certbot"),
 		LEDir:           env("PICKLE_PROXY_AGENT_LE_DIR", "/etc/letsencrypt/live"),

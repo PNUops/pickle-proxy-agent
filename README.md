@@ -74,6 +74,13 @@ scripts/verify.sh        # shellcheck → go vet → go build → go test
 배포는 `scripts/deploy.sh`로 수행한다(빌드 후 대상 호스트에 바이너리/유닛/베이스 nginx 설정
 설치). 코드는 항상 gofmt 정렬 상태를 유지한다.
 
+렌더된 vhost는 nginx `http{}` 컨텍스트에 `$connection_upgrade`와 `$pickle_client_ip`
+두 변수가 정의돼 있어야 한다. 전자는 `scripts/nginx/pickle-base.conf`가 제공하고 후자는
+운영자가 정의한다(정의 예시와 이유는 같은 파일의 주석 참고). TLS를 종단하는 스트림 계층이
+PROXY 헤더로 실제 피어를 전달하므로 vhost는 `real_ip_header proxy_protocol`로 원 클라이언트
+주소를 복원하고, `$pickle_client_ip`가 그 피어의 CDN 클라이언트 IP 헤더를 신뢰할지 결정한다.
+둘 중 하나라도 없으면 첫 렌더에서 `nginx -t`가 실패한다.
+
 ## 커밋 규약
 
 커밋 메시지는 `type: subject` 형식(영어 명령형, 72자 이내, 마침표 없음)을 따르며 git 훅이
