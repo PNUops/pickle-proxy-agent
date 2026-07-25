@@ -41,8 +41,16 @@ CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 RestrictSUIDSGID=true
+# The agent and the nginx binaries it runs need only the standard device nodes and
+# never write kernel tunables; both verified live against `nginx -t` and a reload.
+PrivateDevices=true
+ProtectKernelTunables=true
 # MemoryDenyWriteExecute is deliberately NOT set: its seccomp filter is inherited by
 # exec'd children, and certbot (Python/cffi) is not verified to tolerate it.
+# SystemCallFilter is left unset for the same reason. The daemon execs nginx and,
+# once custom domains are enabled, certbot; a seccomp filter applies to those
+# children too, and breaking `nginx -t`/reload takes the live HTTP path down with
+# it. Revisit together with certbot validation rather than as a blind tightening.
 
 [Install]
 WantedBy=multi-user.target
