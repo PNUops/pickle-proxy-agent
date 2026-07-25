@@ -124,6 +124,24 @@ func TestValidateRejectsBadInput(t *testing.T) {
 	}
 }
 
+// A route may only ever point at a user VM. Anything else — loopback, the bridge
+// gateway, an internal service, a public address — must be refused before it can be
+// rendered, so a hostile route cannot aim the reverse proxy at the internal networks.
+func TestValidateRejectsTargetsOutsideTheVMNetwork(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "172.30.1.20", "172.28.255.255", "172.30.0.1", "8.8.8.8", "::1"} {
+		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcard}
+		if err := Validate(r); err == nil {
+			t.Errorf("targetIp %s is outside the user VM network but was accepted", ip)
+		}
+	}
+	for _, ip := range []string{"172.29.0.1", "172.29.4.11", "172.29.255.254"} {
+		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcard}
+		if err := Validate(r); err != nil {
+			t.Errorf("targetIp %s is a user VM address but was rejected: %v", ip, err)
+		}
+	}
+}
+
 func TestFileName(t *testing.T) {
 	if got := FileName("a.b.com"); got != "a.b.com.conf" {
 		t.Fatalf("FileName = %s", got)

@@ -54,7 +54,7 @@ pickle-api가 밀어주는 "원하는 상태"(라우트와 인증서)를 받아 
 cmd/proxy-agent/      진입점 (env 설정 → 조립 → 서비스)
 internal/config/      env 기반 설정 (토큰이 비어 있으면 fail-closed)
 internal/model/       pickle-api와 공유하는 wire 타입 (고정된 계약 형태)
-internal/render/      vhost 템플릿 렌더 + 입력 검증
+internal/render/      vhost 템플릿 렌더 + 입력 검증 (타깃은 사용자 VM 네트워크 내부만 허용)
 internal/nginx/       `nginx -t` / `nginx -s reload` 러너 (인터페이스 + exec 구현)
 internal/certbot/     webroot HTTP-01 발급 (인터페이스 + certbot exec 구현)
 internal/state/       FQDN별 세대 + 인증서 상태, JSON 영속화

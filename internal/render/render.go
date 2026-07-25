@@ -193,9 +193,25 @@ func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (
 	return buf.String(), nil
 }
 
-// Validate checks a PRESENT route has a sane target. The API is the source of truth
-// for the target IP (SSRF guard lives there); this is a defensive shape check so a
-// malformed request never produces a config that only fails at `nginx -t`.
+// targetNet is the user-VM network. Every proxy target must live inside it: the
+// only thing a route may point at is a user's VM. Keeping the check here means a
+// route that somehow asks for a loopback, link-local, gateway or internal-service
+// address is refused before it is ever written to disk, so a compromised caller
+// (or a stolen agent token) cannot turn the reverse proxy into a probe of the
+// internal networks. Defence in depth: the API validates the target too.
+var targetNet = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("172.29.0.0/16")
+	if err != nil {
+		panic(err)
+	}
+	return n
+}()
+
+// Validate checks a PRESENT route has a sane target: a well-formed FQDN, a port in
+// range, and an IP inside the user-VM network. The API is the first line of defence
+// for the target IP; this is the agent's own guard, so a malformed or hostile
+// request never produces a config that only fails at `nginx -t` — or worse, one that
+// passes.
 func Validate(r model.Route) error {
 	if strings.TrimSpace(r.FQDN) == "" {
 		return fmt.Errorf("fqdn is empty")
@@ -206,8 +222,12 @@ func Validate(r model.Route) error {
 	if r.DesiredState != model.Present {
 		return nil
 	}
-	if net.ParseIP(r.TargetIP) == nil {
+	ip := net.ParseIP(r.TargetIP)
+	if ip == nil {
 		return fmt.Errorf("targetIp %q is not a valid IP", r.TargetIP)
+	}
+	if !targetNet.Contains(ip) {
+		return fmt.Errorf("targetIp %q is outside the user VM network %s", r.TargetIP, targetNet)
 	}
 	if r.TargetPort < 1 || r.TargetPort > 65535 {
 		return fmt.Errorf("targetPort %d out of range", r.TargetPort)
