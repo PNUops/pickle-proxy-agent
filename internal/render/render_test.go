@@ -142,6 +142,26 @@ func TestValidateRejectsTargetsOutsideTheVMNetwork(t *testing.T) {
 	}
 }
 
+// A state the agent does not recognise must be refused, not waved through: the
+// manager renders a vhost for anything that is not ABSENT, so a lowercase or empty
+// state used to reach the renderer with the target checks skipped.
+func TestValidateRejectsUnrecognisedDesiredStates(t *testing.T) {
+	for _, state := range []string{"present", "Present", "", "PRESENT ", "garbage"} {
+		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.DesiredState(state),
+			TargetIP: "172.30.1.20", TargetPort: 8080, CertRef: model.CertRefWildcard}
+		if err := Validate(r); err == nil {
+			t.Errorf("desiredState %q reached the renderer with an internal target", state)
+		}
+	}
+}
+
+func TestValidateStillAcceptsAbsentWithoutATarget(t *testing.T) {
+	r := model.Route{FQDN: "gone.pickle.pnuops.com", DesiredState: model.Absent}
+	if err := Validate(r); err != nil {
+		t.Fatalf("ABSENT route needs no target but was rejected: %v", err)
+	}
+}
+
 func TestFileName(t *testing.T) {
 	if got := FileName("a.b.com"); got != "a.b.com.conf" {
 		t.Fatalf("FileName = %s", got)

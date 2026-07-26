@@ -207,11 +207,17 @@ var targetNet = func() *net.IPNet {
 	return n
 }()
 
-// Validate checks a PRESENT route has a sane target: a well-formed FQDN, a port in
-// range, and an IP inside the user-VM network. The API is the first line of defence
-// for the target IP; this is the agent's own guard, so a malformed or hostile
-// request never produces a config that only fails at `nginx -t` — or worse, one that
-// passes.
+// Validate checks a route has a sane target: a well-formed FQDN, a port in range,
+// and an IP inside the user-VM network. The API is the first line of defence for
+// the target IP; this is the agent's own guard, so a malformed or hostile request
+// never produces a config that only fails at `nginx -t` — or worse, one that passes.
+//
+// The state check is deliberately "anything that is not ABSENT gets the target
+// rules", mirroring the manager, which renders a vhost for every state it does not
+// recognise as ABSENT. Gating on "== PRESENT" instead would let an unrecognised
+// state (a lowercase spelling, an empty string) render a vhost with the target
+// checks skipped entirely. Unknown states are refused outright so the two layers
+// cannot drift apart again.
 func Validate(r model.Route) error {
 	if strings.TrimSpace(r.FQDN) == "" {
 		return fmt.Errorf("fqdn is empty")
@@ -219,8 +225,12 @@ func Validate(r model.Route) error {
 	if !validFQDN(r.FQDN) {
 		return fmt.Errorf("fqdn %q is not a valid hostname", r.FQDN)
 	}
-	if r.DesiredState != model.Present {
+	switch r.DesiredState {
+	case model.Absent:
 		return nil
+	case model.Present:
+	default:
+		return fmt.Errorf("desiredState %q is not recognised", r.DesiredState)
 	}
 	ip := net.ParseIP(r.TargetIP)
 	if ip == nil {
