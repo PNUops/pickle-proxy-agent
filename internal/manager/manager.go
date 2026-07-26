@@ -17,6 +17,7 @@ package manager
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -266,12 +267,18 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 
 // testAndReload validates the on-disk config, then reloads only if valid.
 func (m *Manager) testAndReload(ctx context.Context) (string, error) {
+	// A failure here rolls the file back and answers 422, but the caller only ever
+	// sees the message over HTTP. Log it too: when the platform API is the thing
+	// that is broken, the agent's own journal is the only place left to read why a
+	// reload was refused.
 	out, err := m.nginx.Test(ctx)
 	if err != nil {
+		log.Printf("nginx -t failed: %v: %s", err, out)
 		return out, err
 	}
 	if err := m.nginx.Reload(ctx); err != nil {
 		msg := strings.TrimSpace(out + "\nreload: " + err.Error())
+		log.Printf("nginx reload failed: %s", msg)
 		return msg, err
 	}
 	return out, nil
