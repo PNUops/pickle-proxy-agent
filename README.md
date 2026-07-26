@@ -72,7 +72,7 @@ scripts/              verify.sh, deploy.sh, systemd 유닛, nginx 베이스 설�
 
 ```bash
 scripts/setup-hooks.sh   # 최초 1회: git 훅 설치
-scripts/verify.sh        # shellcheck → gofmt → go vet → go build → go test
+scripts/verify.sh        # shellcheck → gofmt → go vet → go build → go test → 공개 위생 검사
 ```
 
 `verify.sh`가 `gofmt -l`을 하드 게이트로 실행하므로 코드는 항상 gofmt 정렬 상태로 유지된다.
@@ -148,3 +148,5 @@ deploy-hook에서 `systemctl reload nginx`를 실행해 갱신된 커스텀 도�
 커밋 메시지는 `type: subject` 형식(영어 명령형, 72자 이내, 마침표 없음)을 따르며 git 훅이
 이를 강제한다. type은 `feat`, `fix`, `docs`, `test`, `chore`, `refactor`, `perf`,
 `build`, `style`, `ci`, `revert`, `merge` 중 하나다.
+
+`scripts/hygiene.sh`는 이 저장소가 공개물이라는 전제를 검사한다 — 비공개 문서 저장소나 인프라 저장소를 가리키는 참조, 내부 진행 표기(마일스톤·웨이브 등)가 있으면 검증이 실패한다. 수동 점검이 두 차례 위반을 놓친 뒤 자동화했다.
