@@ -8,7 +8,7 @@
 # It is idempotent: re-running upgrades the binary and restarts the service. It does
 # NOT touch the opus.pusan.ac.kr config and only creates the agent-owned paths.
 #
-# Prerequisites on the target (provisioned separately, see infra runbooks): nginx with
+# Prerequisites on the target (provisioned separately by the operator): nginx with
 # `include` of /etc/nginx/pickle.d/*.conf and the map from pickle-base.conf, certbot,
 # the Origin CA wildcard cert at /etc/nginx/pickle-certs/origin.{crt,key} (the agent.env
 # written below overrides the code defaults to that path), and worker_shutdown_timeout.
