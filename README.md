@@ -1,152 +1,204 @@
 # pickle-proxy-agent
 
-Pickle(피클)은 부산대학교 구성원을 위한 셀프서비스 클라우드 플랫폼 **PNU Cloud**(정식 명칭: 부산대학교 클라우드 플랫폼)의 코드네임이다. 사용자가 웹 콘솔에서
-VM을 신청하면 관리자 승인 후 Proxmox VE에 자동 프로비저닝되며, SSH 접속과 도메인 기반
-HTTP(S) 공개까지 제공한다. 이 저장소는 그중 리버스 프록시 제어 에이전트를 담당한다.
+부산대학교 클라우드 플랫폼(Pickle)의 리버스 프록시 제어 에이전트입니다.
 
-## 역할
+사용자가 콘솔에서 도메인을 공개하면 [pickle-api](https://github.com/PNUops/pickle-api)가
+해당 FQDN의 설정 전체를 이 에이전트에 보내고, 에이전트가 nginx를 그 설정대로 맞춥니다.
+표준 라이브러리만 사용하는 단일 정적 Go 바이너리입니다.
 
-pickle-api가 밀어주는 "원하는 상태"(라우트와 인증서)를 받아 nginx 리버스 프록시를 그 상태에
-맞게 유지하는 작은 Go 데몬이다. 요청마다 다음을 수행한다.
+라우팅 정보의 원본은 API 서버의 데이터베이스이고, nginx 설정은 거기서 파생된 산출물입니다.
+에이전트는 자기가 소유한 vhost 파일(FQDN당 한 개)만 다루고 nginx 트리의 다른 부분은
+건드리지 않습니다.
 
-1. nginx vhost 설정을 렌더한다.
-2. `nginx -t`로 후보 설정을 검증한다.
-3. 검증을 통과하면 nginx를 reload한다.
-4. 적용 결과와 인증서 상태를 보고한다.
+## 전체 구조
 
-라우팅의 진실(source of truth)은 API 서버의 데이터베이스이며, nginx 설정은 그로부터 파생된
-산출물이다. 모든 변경은 단일 직렬 큐를 통해 한 번에 하나씩(render → `nginx -t` → 원자적 교체
-→ reload) 처리되고, 어떤 단계라도 실패하면 직전 파일 상태로 롤백하므로 실패한 적용이 살아 있는
-설정을 훼손하지 않는다.
+```
+[제어]   pickle-api ──도메인 설정(HTTP)──▶ proxy-agent ──vhost 렌더·검증──▶ nginx
+[데이터] 방문자 ──HTTPS──▶ nginx ──▶ 사용자 VM의 웹 서비스
+```
 
-인증서는 두 갈래로 구분한다.
+에이전트는 제어 경로에만 있습니다. 방문자 트래픽은 에이전트를 지나지 않으므로,
+에이전트가 멈춰도 이미 공개된 도메인은 계속 서빙됩니다.
 
-- **플랫폼 서브도메인**: 플랫폼 와일드카드 인증서(Cloudflare Origin CA)를 사용한다.
-- **사용자 커스텀 도메인**: 도메인별 Let's Encrypt 인증서를 certbot(HTTP-01, webroot)으로
-  발급/갱신한다. 발급 전에는 챌린지 전용 vhost를 먼저 올리고, 인증서가 준비되면 정식 HTTPS
-  vhost로 전환하는 2단계 렌더를 쓴다. 발급 실패는 적용을 실패시키지 않고 `/status`에 노출된다.
+## 주요 기능
 
-에이전트는 자신이 관리하는 vhost 파일(FQDN당 한 개)만 소유하며 nginx 트리의 다른 부분은 절대
-건드리지 않는다.
+플랫폼은 VM 신청·승인·생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
+삭제까지를 다룹니다. 이 저장소가 맡는 부분은 아래와 같습니다.
+
+- **도메인 공개 적용**: 사용자가 콘솔에서 공개한 도메인이 실제로 VM의 웹 서비스에 닿도록
+  프록시를 맞춥니다.
+- **인증서 준비**: 플랫폼 서브도메인은 준비된 인증서를 쓰고, 사용자가 연결한 도메인은
+  도메인별 인증서를 발급하고 갱신합니다.
+- **공개 해제 정리**: 공개를 내리면 라우팅과 설정을 함께 거둡니다.
+- **실패 격리**: 검증을 통과하지 못한 설정은 반영되지 않고, 이미 반영된 설정이 그대로
+  유지됩니다.
+- **대상 제한**: 프록시가 가리킬 수 있는 곳은 사용자 VM 네트워크 안으로 한정됩니다.
+- **적용 상태 보고**: FQDN마다 어느 세대까지 반영됐는지와 인증서 상태를 조회할 수 있게
+  내놓습니다.
+- **전체 재동기화**: 스냅샷을 통째로 받아 다시 렌더하고, 목록에 없는 설정은 거둡니다.
+
+## 동작 방식
+
+모든 변경은 단일 직렬 큐를 지나 한 번에 하나씩 처리됩니다.
+
+```
+요청 수신 → vhost 렌더 → nginx -t 검증 → 원자적 파일 교체 → reload → 결과 보고
+                              │ 어느 단계든 실패하면
+                              ▼
+                     직전 파일 상태로 롤백 (이미 반영된 설정은 그대로)
+```
+
+FQDN마다 단조 증가하는 `generation`을 영속화하므로, 이미 적용된 세대 이하의 요청은
+no-op(`409`)입니다. 네트워크 재시도가 몇 번을 오든 결과가 같습니다.
+
+세대와 인증서 상태는 임시 파일에 쓴 뒤 원자 교체로 영속화합니다. 적용 도중 프로세스가
+죽어도 상태 파일이 반쯤 쓰인 채 남지 않습니다.
+
+인증서는 두 갈래입니다. 플랫폼 서브도메인은 와일드카드 인증서를 그대로 쓰고, 사용자
+커스텀 도메인은 도메인별 Let's Encrypt 인증서를 certbot(HTTP-01, webroot)으로
+발급합니다. 발급 전에는 챌린지 전용 vhost를 먼저 올려 두고 인증서가 준비되면 정식 HTTPS
+vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적용 자체는 실패하지 않고
+`/status`에 드러납니다.
 
 ## 계약 표면
 
-에이전트는 `172.30.1.10:9443`(내부 vmbr1 주소, 평문 HTTP)에 바인드한다. 이 주소로 향하는
-DNAT은 없으므로 외부에서는 도달할 수 없고, 내부 브리지 전용으로만 다음 세 개의 엔드포인트를
-제공한다.
+내부 브리지 주소(`172.30.1.10:9443`)에만 바인드합니다. 이 주소로 향하는 DNAT이 없으므로
+외부에서는 도달할 수 없습니다.
 
-- `POST /apply` — 단일 FQDN의 원하는 상태 전체를 받아 vhost를 렌더/삭제한다. FQDN별 단조
-  증가 `generation`을 영속화하여, 이미 적용된 세대 이하의 요청은 no-op(`409`)으로 처리한다.
-- `POST /sync-all` — 전체 스냅샷을 받아 세트를 통째로 다시 렌더하고, 매니페스트에 없는
-  에이전트 관리 vhost는 정리(prune)한다.
-- `GET /status` — 헬스, 마지막 apply/sync, FQDN별 적용 세대, 커스텀 도메인 인증서 상태.
+- `POST /apply` — 단일 FQDN의 설정 전체를 받아 vhost를 렌더하거나 지웁니다
+- `POST /sync-all` — 전체 스냅샷으로 세트를 재렌더하고, 매니페스트에 없는 vhost는 정리합니다
+- `GET /status` — 헬스, FQDN별 적용 세대, 커스텀 도메인 인증서 상태
 
-모든 라우트는 fail-closed로 보호된다. 공유 bearer 토큰(`PICKLE_PROXY_AGENT_TOKEN`)과
-소스 IP 허용 목록(`PICKLE_PROXY_AGENT_ALLOWED_SRC`)을 모두 통과해야 하며, 내부 브리지에서만
-접근할 수 있다. 토큰이 비어 있으면 부팅이 거부되고, 템플릿 자리표시자 값
-(`CHANGEME` / 과거 deploy 스크립트가 남긴 오타 `CHANGME`)도 같은 이유로 거부된다.
-잘 알려진 토큰은 토큰이 없는 것과 다름없기 때문이다.
+## 보안 경계
 
-## 스택
+공유 bearer 토큰과 소스 IP 허용 목록을 둘 다 통과해야 합니다. 토큰이 비어 있으면 부팅을
+거부합니다. 자리표시자 토큰도 부팅 단계에서 걸러냅니다. 렌더 입력도 검증해 프록시 대상은
+사용자 VM 네트워크 내부 주소만 허용합니다.
 
-- Go 1.26 (`go.mod` 참고)
-- 표준 라이브러리만 사용, 외부 의존성 0
+## 시작하기
+
+```bash
+scripts/verify.sh        # shellcheck → gofmt → go vet → build → test → 공개 위생 검사
+```
+
+Go 1.26이 필요합니다. `gofmt -l`이 하드 게이트라 코드는 항상 gofmt 정렬 상태입니다.
 
 ## 레이아웃
 
 ```
 cmd/proxy-agent/      진입점 (env 설정 → 조립 → 서비스)
-internal/config/      env 기반 설정 (토큰이 비어 있으면 fail-closed)
-internal/model/       pickle-api와 공유하는 wire 타입 (고정된 계약 형태)
-internal/render/      vhost 템플릿 렌더 + 입력 검증 (타깃은 사용자 VM 네트워크 내부만 허용)
-internal/nginx/       `nginx -t` / `nginx -s reload` 러너 (인터페이스 + exec 구현)
-internal/certbot/     webroot HTTP-01 발급 (인터페이스 + certbot exec 구현)
-internal/state/       FQDN별 세대 + 인증서 상태, JSON 영속화
-internal/manager/     직렬화된 apply/sync-all: render→test→swap→reload→rollback
-internal/server/      HTTP 서버, fail-closed 인증, 키별 레이트 리밋
-internal/fake/        nginx/certbot 테스트 더블 (데몬 빌드에는 포함되지 않음)
-scripts/              verify.sh, deploy.sh, systemd 유닛, nginx 베이스 설정
+internal/config/      env 기반 설정            // 토큰이 비면 여기서 부팅을 막습니다
+internal/model/       pickle-api와 공유하는 wire 타입
+internal/render/      vhost 템플릿 렌더와 입력 검증
+internal/nginx/       nginx -t / reload 러너   // 인터페이스 + exec 구현
+internal/certbot/     HTTP-01 발급             // 인터페이스 + exec 구현
+internal/state/       세대·인증서 상태 JSON 영속화
+internal/manager/     직렬화된 apply/sync-all  // 롤백이 있는 자리
+internal/server/      HTTP 서버, 인증, 요청 빈도 제한
+internal/fake/        nginx·certbot 테스트 더블 // 데몬 빌드에는 들어가지 않습니다
+scripts/              verify, systemd 유닛, nginx 베이스 설정
 ```
 
-## 빌드 & 검증
-
-```bash
-scripts/setup-hooks.sh   # 최초 1회: git 훅 설치
-scripts/verify.sh        # shellcheck → gofmt → go vet → go build → go test → 공개 위생 검사
-```
-
-`verify.sh`가 `gofmt -l`을 하드 게이트로 실행하므로 코드는 항상 gofmt 정렬 상태로 유지된다.
-
-## 배포
-
-배포는 `scripts/deploy.sh`로 수행한다. 자동 실행되지 않으며, 대상 호스트에 SSH로 닿을 수 있는
-빌드 호스트에서 의도적으로 실행한다. 정적 linux/amd64 바이너리를 크로스 컴파일해
-`/usr/local/bin/pickle-proxy-agent`에 설치하고, systemd 유닛과 베이스 nginx 설정
-(`scripts/nginx/pickle-base.conf` → `/etc/nginx/conf.d/`)을 함께 배치한다. 멱등이므로
-재실행하면 바이너리를 교체하고 서비스를 재시작한다.
-
-**환경 파일과 토큰**: 유닛은 `/etc/pickle-proxy-agent/agent.env`(모드 0600, root)를
-`EnvironmentFile`로 읽는다. 이 파일이 없으면 배포 스크립트가 **대상 호스트에서**
-`openssl rand -hex 32`로 토큰을 생성해 새로 쓴다(기존 파일은 절대 덮어쓰지 않는다). 최초
-설치라면 생성된 `PICKLE_PROXY_AGENT_TOKEN` 값을 **직접 API 쪽 환경으로 복사해야** 하며,
-그러지 않으면 pickle-api의 호출이 전부 401로 거부된다. 토큰 보관 위치는 운영 시크릿 저장소에
-기록한다.
-
-**와일드카드 인증서 경로 오버라이드는 필수다.** 코드 기본값은
-`/etc/nginx/certs/origin/{fullchain,privkey}.pem`이지만 실제 배포 경로는
-`/etc/nginx/pickle-certs/origin.{crt,key}`다. 오버라이드 없이 뜨면 렌더된 vhost가 존재하지
-않는 인증서 파일을 가리켜 `nginx -t`가 실패한다. 그래서 배포 스크립트가 생성하는 `agent.env`는
-`PICKLE_PROXY_AGENT_WILDCARD_CERT`/`_KEY`를 실제 경로로 함께 써 준다. `agent.env`를 손으로
-만든다면 이 두 줄을 반드시 포함해야 한다.
-
-**certbot 갱신 훅**: 배포 스크립트는
-`/etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh`도 설치한다. certbot의 타이머가
-인증서를 갱신해도 nginx는 reload 전까지 옛 파일을 계속 서빙하므로, 갱신 성공 후에만 도는
-deploy-hook에서 `systemctl reload nginx`를 실행해 갱신된 커스텀 도메인 인증서가 즉시
-반영되게 한다.
-
-### 대상 호스트 사전 조건
-
-배포 스크립트가 만들어 주지 않는, 운영자가 미리 갖춰야 하는 것들이다.
-
-- **nginx**가 설치돼 있고, `http{}` 컨텍스트에서 `/etc/nginx/conf.d/pickle-base.conf`를
-  읽어 `include /etc/nginx/pickle.d/*.conf`가 유효해야 한다(베이스 설정 자체가 이 include를
-  담고 있다).
-- **`$pickle_client_ip`** 변수가 `http{}` 컨텍스트에 정의돼 있어야 한다. `$connection_upgrade`는
-  베이스 설정이 제공하지만 이 변수는 운영자가 정의한다(정의 예시와 이유는
-  `scripts/nginx/pickle-base.conf`의 주석 참고). TLS를 종단하는 스트림 계층이 PROXY 헤더로
-  실제 피어를 전달하므로 vhost는 `real_ip_header proxy_protocol`로 원 클라이언트 주소를
-  복원하고, `$pickle_client_ip`가 그 피어의 CDN 클라이언트 IP 헤더를 신뢰할지 결정한다.
-  두 변수 중 하나라도 없으면 첫 렌더에서 `nginx -t`가 실패한다.
-- **certbot** 설치. 커스텀 도메인의 HTTP-01 발급·갱신에 쓰인다.
-- nginx의 **`worker_shutdown_timeout`** 설정. reload 시 옛 워커가 무한정 남지 않게 한다.
-- Origin CA 와일드카드 인증서가 `/etc/nginx/pickle-certs/origin.{crt,key}`에 있을 것.
-
-## 환경 변수 (`/etc/pickle-proxy-agent/agent.env`)
-
-시크릿 값은 이 저장소에 포함되지 않는다. 토큰을 제외한 모든 값은 as-built 배포 레이아웃에
-맞는 기본값을 가진다.
+## 구성 (`/etc/pickle-proxy-agent/agent.env`)
 
 | 변수 | 의미 | 기본값 |
 |---|---|---|
-| `PICKLE_PROXY_AGENT_TOKEN` | 공유 bearer 토큰. 빈 값과 자리표시자(`CHANGEME`/`CHANGME`)는 부팅 거부 | 없음 (**필수**) |
-| `PICKLE_PROXY_AGENT_LISTEN` | HTTP 제어 서버 바인드 주소 | `172.30.1.10:9443` |
-| `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 호출을 허용할 소스 IP 목록(쉼표 구분). 빈 집합은 전원 거부(fail-closed) | `172.30.1.20` (pickle-api) |
-| `PICKLE_PROXY_AGENT_NGINX_DIR` | 에이전트가 소유하는 include 디렉터리. 이 안의 `*.conf`만 건드린다 | `/etc/nginx/pickle.d` |
-| `PICKLE_PROXY_AGENT_STATE_FILE` | FQDN별 마지막 적용 세대와 인증서 상태의 JSON 영속 파일 | `/var/lib/pickle-proxy-agent/state.json` |
-| `PICKLE_PROXY_AGENT_NGINX_BIN` | `nginx -t` / `nginx -s reload`에 쓸 바이너리 | `nginx` |
-| `PICKLE_PROXY_AGENT_WILDCARD_CERT` | 플랫폼 와일드카드(Origin CA) 인증서 체인. **실배포에서는 오버라이드 필수** | `/etc/nginx/certs/origin/fullchain.pem` |
-| `PICKLE_PROXY_AGENT_WILDCARD_KEY` | 플랫폼 와일드카드 개인키. **실배포에서는 오버라이드 필수** | `/etc/nginx/certs/origin/privkey.pem` |
-| `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단된 vhost의 내부 HTTPS 리슨 주소(`stream{}`이 :443을 소유하고 비-passthrough SNI를 여기로 넘긴다) | `127.0.0.1:8443` |
+| `PICKLE_PROXY_AGENT_TOKEN` | 공유 bearer. 빈 값과 자리표시자는 부팅 거부 | 없음 (필수) |
+| `PICKLE_PROXY_AGENT_LISTEN` | 바인드 주소 | `172.30.1.10:9443` |
+| `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 허용 소스 IP 목록. 빈 집합이면 전원 거부 | `172.30.1.20` |
+| `PICKLE_PROXY_AGENT_WILDCARD_CERT` / `_KEY` | 플랫폼 와일드카드 인증서와 키. 실배포에서는 경로 오버라이드 필수 | `/etc/nginx/certs/origin/...` |
+
+<details>
+<summary>전체 변수 표와 대상 호스트 사전 조건</summary>
+
+| 변수 | 의미 | 기본값 |
+|---|---|---|
+| `PICKLE_PROXY_AGENT_NGINX_DIR` | 에이전트 소유 include 디렉터리 | `/etc/nginx/pickle.d` |
+| `PICKLE_PROXY_AGENT_STATE_FILE` | 세대·인증서 상태 JSON | `/var/lib/pickle-proxy-agent/state.json` |
+| `PICKLE_PROXY_AGENT_NGINX_BIN` | nginx 바이너리 | `nginx` |
+| `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단 vhost의 내부 HTTPS 리슨. `stream{}`이 :443을 소유합니다 | `127.0.0.1:8443` |
 | `PICKLE_PROXY_AGENT_CERTBOT_BIN` | certbot 바이너리 | `certbot` |
 | `PICKLE_PROXY_AGENT_WEBROOT` | HTTP-01 챌린지 webroot | `/var/www/certbot` |
-| `PICKLE_PROXY_AGENT_LE_DIR` | Let's Encrypt live 디렉터리(`<fqdn>/{fullchain,privkey}.pem`) | `/etc/letsencrypt/live` |
+| `PICKLE_PROXY_AGENT_LE_DIR` | Let's Encrypt live 디렉터리 | `/etc/letsencrypt/live` |
 | `PICKLE_PROXY_AGENT_CERTBOT_EMAIL` | certbot 등록 이메일 | 빈 값 |
 
-## 커밋 규약
+대상 호스트에 미리 갖춰져 있어야 하는 것들입니다.
 
-커밋 메시지는 `type: subject` 형식(영어 명령형, 72자 이내, 마침표 없음)을 따르며 git 훅이
-이를 강제한다. type은 `feat`, `fix`, `docs`, `test`, `chore`, `refactor`, `perf`,
-`build`, `style`, `ci`, `revert`, `merge` 중 하나다.
+- nginx 베이스 설정: `include /etc/nginx/pickle.d/*.conf`가 유효하고, `http{}`
+  컨텍스트에 `$pickle_client_ip` 변수가 정의돼 있어야 합니다(정의 예시는
+  `scripts/nginx/pickle-base.conf` 주석에 있습니다).
+- certbot, `worker_shutdown_timeout` 설정, 와일드카드 인증서 파일.
+- certbot 갱신 타이머의 deploy-hook: 갱신 성공 후 `systemctl reload nginx`를 실행합니다.
 
-`scripts/hygiene.sh`는 이 저장소가 공개물이라는 전제를 검사한다 — 비공개 문서 저장소나 인프라 저장소를 가리키는 참조, 내부 진행 표기(마일스톤·웨이브 등)가 있으면 검증이 실패한다. 수동 점검이 두 차례 위반을 놓친 뒤 자동화했다.
+환경 파일이 없으면 배포 도구가 대상 호스트에서 토큰을 새로 만들어 쓰므로, 최초
+설치라면 그 토큰 값을 API 쪽 환경으로 복사해야 합니다.
+
+</details>
+
+## 전체 아키텍처
+
+```mermaid
+flowchart LR
+    subgraph ext [외부]
+        B[콘솔 접속]
+        V[VM 도메인 접속]
+        S[VM SSH 접속]
+        PC[VM 포트 접속]
+    end
+
+    subgraph relay [오프캠퍼스 릴레이]
+        HA[HAProxy :22]
+        NFT[nftables DNAT]
+        RA[pickle-relay-agent]
+    end
+
+    subgraph campus [부산대학교 서버팜]
+        PN[Pickle nginx]
+        VN[VM nginx]
+        C[pickle-console]
+        A[pickle-api]
+        J[JobRunr]
+        G[pickle-sshgw]
+        P[pickle-proxy-agent]
+        DB[(PostgreSQL)]
+        PVE[Proxmox VE]
+        VM[사용자 VM]
+    end
+
+    B --> PN
+    V --> VN
+    S --> HA
+    PC --> NFT
+
+    HA -->|WireGuard| G
+    NFT -->|WireGuard| VM
+    NFT -. 규칙 적용 .- RA
+    RA -->|sync| A
+
+    PN -->|/| C
+    PN -->|/api| A
+    PN -->|/terminal| G
+
+    G -->|인가 질의| A
+    G --> VM
+    VN --> VM
+
+    A --> DB
+    A -->|작업 등록| J
+    J -->|Proxmox API| PVE
+    A -->|도메인 설정| P
+    P -.->|vhost 적용| VN
+    PVE -.->|생성/제어| VM
+```
+
+| 저장소 | 역할 |
+|---|---|
+| [pickle-api](https://github.com/PNUops/pickle-api) | REST API와 프로비저닝 워커 (Spring Boot 4, Java 25, PostgreSQL 18, JobRunr) |
+| [pickle-console](https://github.com/PNUops/pickle-console) | 사용자·관리자 웹 콘솔 (React 19, TypeScript) |
+| [pickle-sshgw](https://github.com/PNUops/pickle-sshgw) | SSH 게이트웨이와 웹 터미널 브리지 (sshpiperd, Go) |
+| [pickle-proxy-agent](https://github.com/PNUops/pickle-proxy-agent) | nginx 리버스 프록시 제어 에이전트 (Go) |
+| [pickle-relay-agent](https://github.com/PNUops/pickle-relay-agent) | 오프캠퍼스 릴레이의 nftables DNAT 에이전트 (Go) |
+| [pickle-infra](https://github.com/PNUops/pickle-infra) (비공개) | 인프라 프로비저닝 스크립트와 운영 런북 (shell) |
+| [pickle-infra-example](https://github.com/PNUops/pickle-infra-example) | 프로비저닝·배포 스크립트와 런북 샘플 |
+| [pickle-secrets](https://github.com/PNUops/pickle-secrets) (비공개) | 호스트 시크릿 볼트 (git-crypt) |
+| [pickle-secrets-example](https://github.com/PNUops/pickle-secrets-example) | 볼트 레이아웃과 git-crypt 운용 절차 |
