@@ -83,7 +83,7 @@ var platformTmpl = template.Must(template.New("platform").Parse(
 	`# Managed by pickle-proxy-agent — do not edit by hand.
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}}
 server {
-    listen {{.HTTPSListen}} ssl;
+    listen {{.HTTPSListen}} ssl proxy_protocol;
     http2 on;
     server_name {{.FQDN}};
 
@@ -93,7 +93,11 @@ server {
     # This socket's only peer is the TLS-terminating stream tier, which prepends a
     # PROXY header carrying the true public peer; restore it into $remote_addr.
     # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
-    # peer may be believed (both come from the base http{} wiring).
+    # peer may be believed (both come from the base http{} wiring). The listen
+    # line has to declare proxy_protocol for the same reason the hand-written
+    # vhosts on this socket do: nginx takes the socket's protocol options from
+    # one server block, so a vhost that omits it disagrees with its neighbours
+    # and nginx warns on every reload.
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
 
@@ -118,7 +122,7 @@ server {
     }
 }
 server {
-    listen {{.HTTPSListen}} ssl;
+    listen {{.HTTPSListen}} ssl proxy_protocol;
     http2 on;
     server_name {{.FQDN}};
 
@@ -128,7 +132,11 @@ server {
     # This socket's only peer is the TLS-terminating stream tier, which prepends a
     # PROXY header carrying the true public peer; restore it into $remote_addr.
     # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
-    # peer may be believed (both come from the base http{} wiring).
+    # peer may be believed (both come from the base http{} wiring). The listen
+    # line has to declare proxy_protocol for the same reason the hand-written
+    # vhosts on this socket do: nginx takes the socket's protocol options from
+    # one server block, so a vhost that omits it disagrees with its neighbours
+    # and nginx warns on every reload.
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
 
