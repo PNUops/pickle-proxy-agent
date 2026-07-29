@@ -5,7 +5,8 @@
 //   - platform subdomains (certRef "wildcard:<root>"): a single HTTPS server on
 //     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard
 //     configured for that root domain.
-//   - custom domains (any other certRef): a per-domain Let's Encrypt cert. Because
+//   - custom domains (certRef equal to the configured Let's Encrypt ref): a
+//     per-domain Let's Encrypt cert. Because
 //     the LE cert does not exist until certbot runs, rendering is two-phase — a
 //     challenge-only :80 vhost (webroot reachable, site proxied over HTTP) until
 //     the cert lands, then the full :80-redirect + :8443-HTTPS vhost.
@@ -35,6 +36,12 @@ type CertPair struct {
 // Params carries the deploy-time settings render needs that are not part of a Route.
 type Params struct {
 	HTTPSListen string // 127.0.0.1:8443
+	// LECertRef is the one certRef that means "per-domain Let's Encrypt". It is
+	// matched exactly rather than treated as a catch-all: a ref this agent does
+	// not recognise is far more likely to come from a pickle-api on the other
+	// side of a contract change than to be a custom domain, and treating it as
+	// one would drive a public certificate issuance for a platform subdomain.
+	LECertRef string
 	// WildcardCerts is the certificate material per platform root domain. A route
 	// naming a root that is absent here is refused: rendering it with whatever
 	// other pair happened to be configured would serve a certificate that does
@@ -160,9 +167,12 @@ func IsPlatform(certRef string) bool {
 // For a wildcard ref it returns the pair configured for that root; for a custom
 // domain the Let's Encrypt live paths derived from the FQDN.
 //
-// An unconfigured root is an error, not a fallback. The agent is the only place
-// that knows which certificate covers which root, so guessing here would produce
-// a vhost that passes `nginx -t` and then serves the wrong certificate.
+// Neither branch has a fallback. An unconfigured root is an error because the
+// agent is the only place that knows which certificate covers which root, and a
+// ref that matches neither shape is an error because the alternative — treating
+// it as a custom domain, as this used to — turns a version skew between the two
+// sides into a public certificate issued for a platform subdomain. Both produce a
+// config `nginx -t` would happily accept.
 func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err error) {
 	if root, ok := model.WildcardRoot(r.CertRef); ok {
 		pair, configured := p.WildcardCerts[root]
@@ -170,6 +180,11 @@ func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err err
 			return "", "", fmt.Errorf("no wildcard certificate configured for root domain %q", root)
 		}
 		return pair.Cert, pair.Key, nil
+	}
+	if r.CertRef != p.LECertRef {
+		return "", "", fmt.Errorf("unrecognised certRef %q (expected %s<root> or %q) — "+
+			"refusing rather than treating it as a custom domain",
+			r.CertRef, model.CertRefWildcardPrefix, p.LECertRef)
 	}
 	base := strings.TrimRight(leDir, "/") + "/" + r.FQDN
 	return base + "/fullchain.pem", base + "/privkey.pem", nil

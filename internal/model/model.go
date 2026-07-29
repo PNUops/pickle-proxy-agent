@@ -3,7 +3,10 @@
 // frozen contract that pickle-api's client mirrors.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // DesiredState is the presence of a vhost for one FQDN.
 type DesiredState string
@@ -25,11 +28,16 @@ const CertRefWildcardPrefix = "wildcard:"
 
 // WildcardRoot returns the root domain a wildcard certRef names, and whether the
 // ref is a wildcard ref at all.
+//
+// A prefix with an empty root ("wildcard:") is still a wildcard ref — it is a
+// misconfigured one. Classifying it as "not a wildcard" would drop it into the
+// custom-domain branch and quietly issue a public certificate for a platform
+// subdomain, so the emptiness has to be caught downstream as an unknown root.
 func WildcardRoot(certRef string) (string, bool) {
-	if len(certRef) <= len(CertRefWildcardPrefix) || certRef[:len(CertRefWildcardPrefix)] != CertRefWildcardPrefix {
+	if !strings.HasPrefix(certRef, CertRefWildcardPrefix) {
 		return "", false
 	}
-	return certRef[len(CertRefWildcardPrefix):], true
+	return strings.TrimPrefix(certRef, CertRefWildcardPrefix), true
 }
 
 // Route is the full desired state for one FQDN. It is the POST /apply body and

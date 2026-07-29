@@ -41,6 +41,13 @@ type Config struct {
 	// NginxBin / reload+test are split so tests can inject a fake binary.
 	NginxBin string
 
+	// LECertRef is the exact certRef value pickle-api uses for custom domains.
+	// Anything that is neither this nor a wildcard ref is refused: an unknown ref
+	// almost certainly means the two sides are on different contract versions,
+	// and the old catch-all behaviour would have issued a public certificate for
+	// a platform subdomain instead of saying so.
+	LECertRef string
+
 	// WildcardCerts is the Cloudflare Origin CA material per platform root domain,
 	// keyed by the root ("pusan.dev"). Several roots can be served at once, each
 	// with its own certificate; a route naming a root that is absent is refused
@@ -83,6 +90,7 @@ func Load() (Config, error) {
 		StateFile:       env("PICKLE_PROXY_AGENT_STATE_FILE", "/var/lib/pickle-proxy-agent/state.json"),
 		NginxBin:        env("PICKLE_PROXY_AGENT_NGINX_BIN", "nginx"),
 		HTTPSListen:     env("PICKLE_PROXY_AGENT_HTTPS_LISTEN", "127.0.0.1:8443"),
+		LECertRef:       env("PICKLE_PROXY_AGENT_LE_CERT_REF", "letsencrypt"),
 		CertbotBin:      env("PICKLE_PROXY_AGENT_CERTBOT_BIN", "certbot"),
 		Webroot:         env("PICKLE_PROXY_AGENT_WEBROOT", "/var/www/certbot"),
 		LEDir:           env("PICKLE_PROXY_AGENT_LE_DIR", "/etc/letsencrypt/live"),

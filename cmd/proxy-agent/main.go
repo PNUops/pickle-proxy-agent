@@ -39,6 +39,7 @@ func main() {
 
 	params := render.Params{
 		HTTPSListen:   cfg.HTTPSListen,
+		LECertRef:     cfg.LECertRef,
 		WildcardCerts: cfg.WildcardCerts,
 		Webroot:       cfg.Webroot,
 	}

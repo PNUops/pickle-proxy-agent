@@ -31,7 +31,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	ng := &fake.Nginx{}
 	cb := fake.NewCertbot()
-	params := render.Params{HTTPSListen: "127.0.0.1:8443", WildcardCerts: map[string]render.CertPair{"pusan.dev": {Cert: "/c/full.pem", Key: "/c/key.pem"}}, Webroot: "/var/www/certbot"}
+	params := render.Params{HTTPSListen: "127.0.0.1:8443", LECertRef: "letsencrypt", WildcardCerts: map[string]render.CertPair{"pusan.dev": {Cert: "/c/full.pem", Key: "/c/key.pem"}}, Webroot: "/var/www/certbot"}
 	mgr := New(dir, params, "/etc/letsencrypt/live", ng, cb, st)
 	return &harness{mgr: mgr, dir: dir, ng: ng, cb: cb, st: st}
 }
@@ -273,7 +273,7 @@ func TestSyncAllFailureLeavesTreeUntouched(t *testing.T) {
 func TestApplyCustomDomainCertFailureSurfacedButVhostLive(t *testing.T) {
 	h := newHarness(t)
 	h.cb.EnsureErr = errors.New("DNS problem: NXDOMAIN looking up A for shop.example.com")
-	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "le-shop"}
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
 	code, res := h.mgr.Apply(context.Background(), r)
 	if code != 200 || !res.Applied {
 		t.Fatalf("custom apply with cert failure => %d %+v (vhost should still be live)", code, res)
@@ -299,7 +299,7 @@ func TestApplyCustomDomainCertFailureSurfacedButVhostLive(t *testing.T) {
 
 func TestApplyCustomDomainCertSuccessUpgradesToHTTPS(t *testing.T) {
 	h := newHarness(t)
-	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "le-shop"}
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
 	code, res := h.mgr.Apply(context.Background(), r)
 	if code != 200 || !res.Applied {
 		t.Fatalf("custom apply => %d %+v", code, res)

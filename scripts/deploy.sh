@@ -10,8 +10,11 @@
 #
 # Prerequisites on the target (provisioned separately by the operator): nginx with
 # `include` of /etc/nginx/pickle.d/*.conf and the map from pickle-base.conf, certbot,
-# the Origin CA wildcard cert at /etc/nginx/pickle-certs/origin.{crt,key} (the agent.env
-# written below overrides the code defaults to that path), and worker_shutdown_timeout.
+# one Origin CA wildcard cert per platform root domain at
+# /etc/nginx/pickle-certs/<root>.{crt,key}, and worker_shutdown_timeout. The pairs
+# must be listed in PICKLE_PROXY_AGENT_WILDCARD_CERTS (agent.env, written below on a
+# first install only): there is no code default, and a root missing from that list
+# has its applies refused by name rather than rendered against another root's cert.
 set -euo pipefail
 
 TARGET="${TARGET:-root@172.30.1.10}"

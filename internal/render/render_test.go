@@ -10,6 +10,7 @@ import (
 func testParams() Params {
 	return Params{
 		HTTPSListen: "127.0.0.1:8443",
+		LECertRef:   "letsencrypt",
 		WildcardCerts: map[string]CertPair{
 			"pusan.dev": {
 				Cert: "/etc/nginx/pickle-certs/pusan-dev.crt",
@@ -56,7 +57,7 @@ func TestRenderPlatform(t *testing.T) {
 }
 
 func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
-	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "le-shop"}
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
 	cert, key, err := CertPaths(r, testParams(), "/etc/letsencrypt/live")
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 	p := testParams()
 	for _, r := range []model.Route{
 		{FQDN: "x.pusan.dev", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"},
-		{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "le"},
+		{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "letsencrypt"},
 	} {
 		out, err := Render(r, p, "/c.pem", "/k.pem", true)
 		if err != nil {
@@ -205,5 +206,28 @@ func TestCertPathsSelectsMaterialPerRoot(t *testing.T) {
 	}
 	if cert != "/etc/nginx/pickle-certs/lab-example.crt" || key != "/etc/nginx/pickle-certs/lab-example.key" {
 		t.Fatalf("second root got %s / %s", cert, key)
+	}
+}
+
+// The retired global wildcard token, as a pickle-api one contract version behind
+// would still send. It used to fall through to the custom-domain branch, which
+// renders an :80 vhost and drives a public certbot issuance for what is actually
+// a platform subdomain — and `nginx -t` accepts the result, so nothing catches it.
+// A ref this agent does not recognise must be refused instead.
+func TestCertPathsRefusesTheRetiredGlobalWildcardRef(t *testing.T) {
+	r := model.Route{FQDN: "team.pusan.dev", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.11", TargetPort: 80, CertRef: "origin-wildcard"}
+	if _, _, err := CertPaths(r, testParams(), "/etc/letsencrypt/live"); err == nil {
+		t.Fatal("a certRef from the previous contract version was accepted as a custom domain")
+	}
+}
+
+// "wildcard:" with nothing after it is a misconfigured platform ref, not a custom
+// domain: an empty root_domain column would produce exactly this.
+func TestCertPathsRefusesAWildcardRefWithNoRoot(t *testing.T) {
+	r := model.Route{FQDN: "team.pusan.dev", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.11", TargetPort: 80, CertRef: model.CertRefWildcardPrefix}
+	if _, _, err := CertPaths(r, testParams(), "/etc/letsencrypt/live"); err == nil {
+		t.Fatal("an empty wildcard root was accepted as a custom domain")
 	}
 }
