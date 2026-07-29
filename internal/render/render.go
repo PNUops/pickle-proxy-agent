@@ -2,9 +2,11 @@
 //
 // Two shapes are produced, selected by certRef:
 //
-//   - platform subdomains (certRef == origin-wildcard): a single HTTPS server on
-//     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard.
-//   - custom domains (any other certRef): a per-domain Let's Encrypt cert. Because
+//   - platform subdomains (certRef "wildcard:<root>"): a single HTTPS server on
+//     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard
+//     configured for that root domain.
+//   - custom domains (certRef equal to the configured Let's Encrypt ref): a
+//     per-domain Let's Encrypt cert. Because
 //     the LE cert does not exist until certbot runs, rendering is two-phase — a
 //     challenge-only :80 vhost (webroot reachable, site proxied over HTTP) until
 //     the cert lands, then the full :80-redirect + :8443-HTTPS vhost.
@@ -25,12 +27,27 @@ import (
 	"github.com/pnuops/pickle-proxy-agent/internal/model"
 )
 
+// CertPair is one certificate/key pair on disk.
+type CertPair struct {
+	Cert string
+	Key  string
+}
+
 // Params carries the deploy-time settings render needs that are not part of a Route.
 type Params struct {
-	HTTPSListen  string // 127.0.0.1:8443
-	WildcardCert string
-	WildcardKey  string
-	Webroot      string
+	HTTPSListen string // 127.0.0.1:8443
+	// LECertRef is the one certRef that means "per-domain Let's Encrypt". It is
+	// matched exactly rather than treated as a catch-all: a ref this agent does
+	// not recognise is far more likely to come from a pickle-api on the other
+	// side of a contract change than to be a custom domain, and treating it as
+	// one would drive a public certificate issuance for a platform subdomain.
+	LECertRef string
+	// WildcardCerts is the certificate material per platform root domain. A route
+	// naming a root that is absent here is refused: rendering it with whatever
+	// other pair happened to be configured would serve a certificate that does
+	// not cover the name, which fails in the browser rather than here.
+	WildcardCerts map[string]CertPair
+	Webroot       string
 }
 
 // proxyCommon is the shared, websocket-upgrade-aware proxy block. `$connection_upgrade`
@@ -141,17 +158,36 @@ server {
 func FileName(fqdn string) string { return fqdn + ".conf" }
 
 // IsPlatform reports whether a certRef selects the platform wildcard template.
-func IsPlatform(certRef string) bool { return certRef == model.CertRefWildcard }
+func IsPlatform(certRef string) bool {
+	_, ok := model.WildcardRoot(certRef)
+	return ok
+}
 
 // CertPaths resolves the certificate/key paths for a route given its certRef.
-// For the wildcard it returns the configured Origin CA pair; for a custom domain
-// it returns the Let's Encrypt live paths derived from the FQDN.
-func CertPaths(r model.Route, p Params, leDir string) (cert, key string) {
-	if IsPlatform(r.CertRef) {
-		return p.WildcardCert, p.WildcardKey
+// For a wildcard ref it returns the pair configured for that root; for a custom
+// domain the Let's Encrypt live paths derived from the FQDN.
+//
+// Neither branch has a fallback. An unconfigured root is an error because the
+// agent is the only place that knows which certificate covers which root, and a
+// ref that matches neither shape is an error because the alternative — treating
+// it as a custom domain, as this used to — turns a version skew between the two
+// sides into a public certificate issued for a platform subdomain. Both produce a
+// config `nginx -t` would happily accept.
+func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err error) {
+	if root, ok := model.WildcardRoot(r.CertRef); ok {
+		pair, configured := p.WildcardCerts[root]
+		if !configured {
+			return "", "", fmt.Errorf("no wildcard certificate configured for root domain %q", root)
+		}
+		return pair.Cert, pair.Key, nil
+	}
+	if r.CertRef != p.LECertRef {
+		return "", "", fmt.Errorf("unrecognised certRef %q (expected %s<root> or %q) — "+
+			"refusing rather than treating it as a custom domain",
+			r.CertRef, model.CertRefWildcardPrefix, p.LECertRef)
 	}
 	base := strings.TrimRight(leDir, "/") + "/" + r.FQDN
-	return base + "/fullchain.pem", base + "/privkey.pem"
+	return base + "/fullchain.pem", base + "/privkey.pem", nil
 }
 
 // Render produces the vhost file content for a PRESENT route.

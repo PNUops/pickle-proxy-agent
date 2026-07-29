@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 
 	"github.com/pnuops/pickle-proxy-agent/internal/certbot"
@@ -36,10 +38,10 @@ func main() {
 	}
 
 	params := render.Params{
-		HTTPSListen:  cfg.HTTPSListen,
-		WildcardCert: cfg.WildcardCert,
-		WildcardKey:  cfg.WildcardKey,
-		Webroot:      cfg.Webroot,
+		HTTPSListen:   cfg.HTTPSListen,
+		LECertRef:     cfg.LECertRef,
+		WildcardCerts: cfg.WildcardCerts,
+		Webroot:       cfg.Webroot,
 	}
 	ng := nginx.New(cfg.NginxBin, cfg.ExecTimeout)
 	cb := certbot.New(cfg.CertbotBin, cfg.Webroot, cfg.LEDir, cfg.CertbotEmail, cfg.ExecTimeout)
@@ -49,6 +51,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Name the platform roots at startup: a route for a root missing here fails at
+	// apply, and this line is what tells an operator whether the agent ever had it.
+	roots := make([]string, 0, len(cfg.WildcardCerts))
+	for root := range cfg.WildcardCerts {
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	log.Printf("platform root domains with wildcard certificates: %s",
+		strings.Join(roots, ", "))
 
 	log.Printf("pickle-proxy-agent listening on %s (nginx dir %s)", cfg.Listen, cfg.NginxDir)
 	if err := server.Run(ctx, cfg.Listen, srv.Handler()); err != nil {

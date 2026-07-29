@@ -3,7 +3,10 @@
 // frozen contract that pickle-api's client mirrors.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // DesiredState is the presence of a vhost for one FQDN.
 type DesiredState string
@@ -15,9 +18,27 @@ const (
 	Absent DesiredState = "ABSENT"
 )
 
-// CertRefWildcard selects the platform Cloudflare Origin CA wildcard certificate.
-// Any other certRef is treated as a per-domain Let's Encrypt certificate.
-const CertRefWildcard = "origin-wildcard"
+// CertRefWildcardPrefix marks a certRef that selects a platform wildcard
+// certificate; the root domain follows it verbatim ("wildcard:example.dev").
+// Naming the root in the ref — rather than having one global wildcard token —
+// is what lets the platform serve several root domains at once, each with its
+// own certificate. Any certRef without this prefix is a per-domain Let's
+// Encrypt certificate.
+const CertRefWildcardPrefix = "wildcard:"
+
+// WildcardRoot returns the root domain a wildcard certRef names, and whether the
+// ref is a wildcard ref at all.
+//
+// A prefix with an empty root ("wildcard:") is still a wildcard ref — it is a
+// misconfigured one. Classifying it as "not a wildcard" would drop it into the
+// custom-domain branch and quietly issue a public certificate for a platform
+// subdomain, so the emptiness has to be caught downstream as an unknown root.
+func WildcardRoot(certRef string) (string, bool) {
+	if !strings.HasPrefix(certRef, CertRefWildcardPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(certRef, CertRefWildcardPrefix), true
+}
 
 // Route is the full desired state for one FQDN. It is the POST /apply body and
 // also each entry in a /sync-all manifest.

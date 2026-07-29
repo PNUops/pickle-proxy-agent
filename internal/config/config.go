@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/pnuops/pickle-proxy-agent/internal/render"
 )
 
 // Config is the fully resolved runtime configuration.
@@ -39,9 +41,18 @@ type Config struct {
 	// NginxBin / reload+test are split so tests can inject a fake binary.
 	NginxBin string
 
-	// TLS certificate material for the platform wildcard (Cloudflare Origin CA).
-	WildcardCert string
-	WildcardKey  string
+	// LECertRef is the exact certRef value pickle-api uses for custom domains.
+	// Anything that is neither this nor a wildcard ref is refused: an unknown ref
+	// almost certainly means the two sides are on different contract versions,
+	// and the old catch-all behaviour would have issued a public certificate for
+	// a platform subdomain instead of saying so.
+	LECertRef string
+
+	// WildcardCerts is the Cloudflare Origin CA material per platform root domain,
+	// keyed by the root ("pusan.dev"). Several roots can be served at once, each
+	// with its own certificate; a route naming a root that is absent is refused
+	// rather than rendered with another root's pair.
+	WildcardCerts map[string]render.CertPair
 
 	// HTTPSListen is the internal HTTPS listen address for terminated vhosts. The
 	// stream{} block owns :443 and forwards non-passthrough SNIs here.
@@ -78,9 +89,8 @@ func Load() (Config, error) {
 		NginxDir:        env("PICKLE_PROXY_AGENT_NGINX_DIR", "/etc/nginx/pickle.d"),
 		StateFile:       env("PICKLE_PROXY_AGENT_STATE_FILE", "/var/lib/pickle-proxy-agent/state.json"),
 		NginxBin:        env("PICKLE_PROXY_AGENT_NGINX_BIN", "nginx"),
-		WildcardCert:    env("PICKLE_PROXY_AGENT_WILDCARD_CERT", "/etc/nginx/certs/origin/fullchain.pem"),
-		WildcardKey:     env("PICKLE_PROXY_AGENT_WILDCARD_KEY", "/etc/nginx/certs/origin/privkey.pem"),
 		HTTPSListen:     env("PICKLE_PROXY_AGENT_HTTPS_LISTEN", "127.0.0.1:8443"),
+		LECertRef:       env("PICKLE_PROXY_AGENT_LE_CERT_REF", "letsencrypt"),
 		CertbotBin:      env("PICKLE_PROXY_AGENT_CERTBOT_BIN", "certbot"),
 		Webroot:         env("PICKLE_PROXY_AGENT_WEBROOT", "/var/www/certbot"),
 		LEDir:           env("PICKLE_PROXY_AGENT_LE_DIR", "/etc/letsencrypt/live"),
@@ -88,6 +98,11 @@ func Load() (Config, error) {
 		RateLimitPerMin: 600,
 		ExecTimeout:     60 * time.Second,
 	}
+	wildcards, err := parseWildcardCerts(os.Getenv("PICKLE_PROXY_AGENT_WILDCARD_CERTS"))
+	if err != nil {
+		return Config{}, err
+	}
+	c.WildcardCerts = wildcards
 	switch t := strings.TrimSpace(c.Token); t {
 	case "":
 		return Config{}, fmt.Errorf("PICKLE_PROXY_AGENT_TOKEN is required (empty token would leave the agent unauthenticated)")
@@ -97,6 +112,42 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("PICKLE_PROXY_AGENT_TOKEN is the placeholder %q; generate a real one (openssl rand -hex 32)", t)
 	}
 	return c, nil
+}
+
+// parseWildcardCerts reads PICKLE_PROXY_AGENT_WILDCARD_CERTS, a comma-separated
+// list of "<root>=<certPath>:<keyPath>" entries — one per platform root domain:
+//
+//	pusan.dev=/etc/nginx/pickle-certs/pusan-dev.crt:/etc/nginx/pickle-certs/pusan-dev.key
+//
+// There is no default. A blank value yields an empty map, which is not fatal by
+// itself (an agent serving only custom domains needs none) but makes every
+// platform route fail at apply with a message naming the missing root — a loud,
+// specific failure instead of a vhost quietly built on a path nobody set.
+// Malformed entries ARE fatal: a typo that silently dropped one root would take
+// its subdomains down at the next apply, long after the restart that caused it.
+func parseWildcardCerts(s string) (map[string]render.CertPair, error) {
+	out := map[string]render.CertPair{}
+	for _, entry := range strings.Split(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		root, pair, ok := strings.Cut(entry, "=")
+		root = strings.TrimSpace(root)
+		if !ok || root == "" {
+			return nil, fmt.Errorf("PICKLE_PROXY_AGENT_WILDCARD_CERTS entry %q: want <root>=<cert>:<key>", entry)
+		}
+		certPath, keyPath, ok := strings.Cut(pair, ":")
+		certPath, keyPath = strings.TrimSpace(certPath), strings.TrimSpace(keyPath)
+		if !ok || certPath == "" || keyPath == "" {
+			return nil, fmt.Errorf("PICKLE_PROXY_AGENT_WILDCARD_CERTS entry %q: want <root>=<cert>:<key>", entry)
+		}
+		if _, dup := out[root]; dup {
+			return nil, fmt.Errorf("PICKLE_PROXY_AGENT_WILDCARD_CERTS lists root %q twice", root)
+		}
+		out[root] = render.CertPair{Cert: certPath, Key: keyPath}
+	}
+	return out, nil
 }
 
 func splitList(s string) []string {

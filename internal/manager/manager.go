@@ -104,7 +104,10 @@ func (m *Manager) Apply(ctx context.Context, r model.Route) (int, model.ApplyRes
 	}
 
 	// PRESENT.
-	certPath, keyPath := render.CertPaths(r, m.params, m.leDir)
+	certPath, keyPath, err := render.CertPaths(r, m.params, m.leDir)
+	if err != nil {
+		return 422, model.ApplyResult{Applied: false, Error: err.Error()}
+	}
 	certReady := render.IsPlatform(r.CertRef) || m.certbot.Exists(r.FQDN)
 	content, err := render.Render(r, m.params, certPath, keyPath, certReady)
 	if err != nil {
@@ -209,7 +212,10 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 			staleKept[r.FQDN] = true
 			continue
 		}
-		certPath, keyPath := render.CertPaths(r, m.params, m.leDir)
+		certPath, keyPath, err := render.CertPaths(r, m.params, m.leDir)
+		if err != nil {
+			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: r.FQDN + ": " + err.Error()}
+		}
 		certReady := render.IsPlatform(r.CertRef) || m.certbot.Exists(r.FQDN)
 		content, err := render.Render(r, m.params, certPath, keyPath, certReady)
 		if err != nil {
@@ -250,7 +256,12 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 
 	// Best-effort cert issuance for custom domains whose cert was not yet present.
 	for _, r := range pendingCustom {
-		certPath, keyPath := render.CertPaths(r, m.params, m.leDir)
+		// Custom refs only, so the lookup cannot miss; the manifest render above
+		// already rejected anything else.
+		certPath, keyPath, err := render.CertPaths(r, m.params, m.leDir)
+		if err != nil {
+			continue
+		}
 		m.settleCert(ctx, r, m.pathFor(r.FQDN), false, certPath, keyPath)
 	}
 

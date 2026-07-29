@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	dir := t.TempDir()
 	st, _ := state.Load(filepath.Join(t.TempDir(), "state.json"))
-	params := render.Params{HTTPSListen: "127.0.0.1:8443", WildcardCert: "/c/full.pem", WildcardKey: "/c/key.pem", Webroot: "/var/www/certbot"}
+	params := render.Params{HTTPSListen: "127.0.0.1:8443", LECertRef: "letsencrypt", WildcardCerts: map[string]render.CertPair{"pusan.dev": {Cert: "/c/full.pem", Key: "/c/key.pem"}}, Webroot: "/var/www/certbot"}
 	mgr := manager.New(dir, params, "/etc/letsencrypt/live", &fake.Nginx{}, fake.NewCertbot(), st)
 	cfg := config.Config{Token: testToken, AllowedSources: []string{testSrc}, RateLimitPerMin: 0}
 	return New(cfg, mgr).Handler()
@@ -173,5 +173,5 @@ func TestRateLimit429(t *testing.T) {
 }
 
 func platformBody() model.Route {
-	return model.Route{FQDN: "team-alpha-a1b2.pickle.pnuops.com", DesiredState: model.Present, Generation: 7, TargetIP: "172.29.4.11", TargetPort: 8080, CertRef: model.CertRefWildcard}
+	return model.Route{FQDN: "team-alpha-a1b2.pusan.dev", DesiredState: model.Present, Generation: 7, TargetIP: "172.29.4.11", TargetPort: 8080, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
 }
