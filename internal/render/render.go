@@ -2,8 +2,9 @@
 //
 // Two shapes are produced, selected by certRef:
 //
-//   - platform subdomains (certRef == origin-wildcard): a single HTTPS server on
-//     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard.
+//   - platform subdomains (certRef "wildcard:<root>"): a single HTTPS server on
+//     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard
+//     configured for that root domain.
 //   - custom domains (any other certRef): a per-domain Let's Encrypt cert. Because
 //     the LE cert does not exist until certbot runs, rendering is two-phase — a
 //     challenge-only :80 vhost (webroot reachable, site proxied over HTTP) until
@@ -25,12 +26,21 @@ import (
 	"github.com/pnuops/pickle-proxy-agent/internal/model"
 )
 
+// CertPair is one certificate/key pair on disk.
+type CertPair struct {
+	Cert string
+	Key  string
+}
+
 // Params carries the deploy-time settings render needs that are not part of a Route.
 type Params struct {
-	HTTPSListen  string // 127.0.0.1:8443
-	WildcardCert string
-	WildcardKey  string
-	Webroot      string
+	HTTPSListen string // 127.0.0.1:8443
+	// WildcardCerts is the certificate material per platform root domain. A route
+	// naming a root that is absent here is refused: rendering it with whatever
+	// other pair happened to be configured would serve a certificate that does
+	// not cover the name, which fails in the browser rather than here.
+	WildcardCerts map[string]CertPair
+	Webroot       string
 }
 
 // proxyCommon is the shared, websocket-upgrade-aware proxy block. `$connection_upgrade`
@@ -141,17 +151,28 @@ server {
 func FileName(fqdn string) string { return fqdn + ".conf" }
 
 // IsPlatform reports whether a certRef selects the platform wildcard template.
-func IsPlatform(certRef string) bool { return certRef == model.CertRefWildcard }
+func IsPlatform(certRef string) bool {
+	_, ok := model.WildcardRoot(certRef)
+	return ok
+}
 
 // CertPaths resolves the certificate/key paths for a route given its certRef.
-// For the wildcard it returns the configured Origin CA pair; for a custom domain
-// it returns the Let's Encrypt live paths derived from the FQDN.
-func CertPaths(r model.Route, p Params, leDir string) (cert, key string) {
-	if IsPlatform(r.CertRef) {
-		return p.WildcardCert, p.WildcardKey
+// For a wildcard ref it returns the pair configured for that root; for a custom
+// domain the Let's Encrypt live paths derived from the FQDN.
+//
+// An unconfigured root is an error, not a fallback. The agent is the only place
+// that knows which certificate covers which root, so guessing here would produce
+// a vhost that passes `nginx -t` and then serves the wrong certificate.
+func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err error) {
+	if root, ok := model.WildcardRoot(r.CertRef); ok {
+		pair, configured := p.WildcardCerts[root]
+		if !configured {
+			return "", "", fmt.Errorf("no wildcard certificate configured for root domain %q", root)
+		}
+		return pair.Cert, pair.Key, nil
 	}
 	base := strings.TrimRight(leDir, "/") + "/" + r.FQDN
-	return base + "/fullchain.pem", base + "/privkey.pem"
+	return base + "/fullchain.pem", base + "/privkey.pem", nil
 }
 
 // Render produces the vhost file content for a PRESENT route.

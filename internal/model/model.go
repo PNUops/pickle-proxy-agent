@@ -15,9 +15,22 @@ const (
 	Absent DesiredState = "ABSENT"
 )
 
-// CertRefWildcard selects the platform Cloudflare Origin CA wildcard certificate.
-// Any other certRef is treated as a per-domain Let's Encrypt certificate.
-const CertRefWildcard = "origin-wildcard"
+// CertRefWildcardPrefix marks a certRef that selects a platform wildcard
+// certificate; the root domain follows it verbatim ("wildcard:example.dev").
+// Naming the root in the ref — rather than having one global wildcard token —
+// is what lets the platform serve several root domains at once, each with its
+// own certificate. Any certRef without this prefix is a per-domain Let's
+// Encrypt certificate.
+const CertRefWildcardPrefix = "wildcard:"
+
+// WildcardRoot returns the root domain a wildcard certRef names, and whether the
+// ref is a wildcard ref at all.
+func WildcardRoot(certRef string) (string, bool) {
+	if len(certRef) <= len(CertRefWildcardPrefix) || certRef[:len(CertRefWildcardPrefix)] != CertRefWildcardPrefix {
+		return "", false
+	}
+	return certRef[len(CertRefWildcardPrefix):], true
+}
 
 // Route is the full desired state for one FQDN. It is the POST /apply body and
 // also each entry in a /sync-all manifest.

@@ -9,17 +9,28 @@ import (
 
 func testParams() Params {
 	return Params{
-		HTTPSListen:  "127.0.0.1:8443",
-		WildcardCert: "/etc/nginx/certs/origin/fullchain.pem",
-		WildcardKey:  "/etc/nginx/certs/origin/privkey.pem",
-		Webroot:      "/var/www/certbot",
+		HTTPSListen: "127.0.0.1:8443",
+		WildcardCerts: map[string]CertPair{
+			"pusan.dev": {
+				Cert: "/etc/nginx/pickle-certs/pusan-dev.crt",
+				Key:  "/etc/nginx/pickle-certs/pusan-dev.key",
+			},
+			"lab.example": {
+				Cert: "/etc/nginx/pickle-certs/lab-example.crt",
+				Key:  "/etc/nginx/pickle-certs/lab-example.key",
+			},
+		},
+		Webroot: "/var/www/certbot",
 	}
 }
 
 func TestRenderPlatform(t *testing.T) {
-	r := model.Route{FQDN: "team-alpha-a1b2.pickle.pnuops.com", DesiredState: model.Present, Generation: 7, TargetIP: "172.29.4.11", TargetPort: 8080, CertRef: model.CertRefWildcard}
-	cert, key := CertPaths(r, testParams(), "/etc/letsencrypt/live")
-	if cert != "/etc/nginx/certs/origin/fullchain.pem" {
+	r := model.Route{FQDN: "team-alpha-a1b2.pusan.dev", DesiredState: model.Present, Generation: 7, TargetIP: "172.29.4.11", TargetPort: 8080, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
+	cert, key, err := CertPaths(r, testParams(), "/etc/letsencrypt/live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert != "/etc/nginx/pickle-certs/pusan-dev.crt" {
 		t.Fatalf("wildcard cert path = %s", cert)
 	}
 	out, err := Render(r, testParams(), cert, key, true)
@@ -27,9 +38,9 @@ func TestRenderPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"server_name team-alpha-a1b2.pickle.pnuops.com;",
+		"server_name team-alpha-a1b2.pusan.dev;",
 		"listen 127.0.0.1:8443 ssl;",
-		"ssl_certificate     /etc/nginx/certs/origin/fullchain.pem;",
+		"ssl_certificate     /etc/nginx/pickle-certs/pusan-dev.crt;",
 		"proxy_pass http://172.29.4.11:8080;",
 		"proxy_set_header Connection $connection_upgrade;", // websocket upgrade
 		"real_ip_header proxy_protocol;",
@@ -46,7 +57,10 @@ func TestRenderPlatform(t *testing.T) {
 
 func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "le-shop"}
-	cert, key := CertPaths(r, testParams(), "/etc/letsencrypt/live")
+	cert, key, err := CertPaths(r, testParams(), "/etc/letsencrypt/live")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cert != "/etc/letsencrypt/live/shop.example.com/fullchain.pem" {
 		t.Fatalf("LE cert path = %s", cert)
 	}
@@ -86,7 +100,7 @@ func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 	p := testParams()
 	for _, r := range []model.Route{
-		{FQDN: "x.pickle.pnuops.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcard},
+		{FQDN: "x.pusan.dev", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"},
 		{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "le"},
 	} {
 		out, err := Render(r, p, "/c.pem", "/k.pem", true)
@@ -119,7 +133,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		}
 	}
 	// ABSENT needs only a valid FQDN, no target.
-	if err := Validate(model.Route{FQDN: "gone.pickle.pnuops.com", DesiredState: model.Absent}); err != nil {
+	if err := Validate(model.Route{FQDN: "gone.pusan.dev", DesiredState: model.Absent}); err != nil {
 		t.Errorf("ABSENT with valid fqdn should pass: %v", err)
 	}
 }
@@ -129,13 +143,13 @@ func TestValidateRejectsBadInput(t *testing.T) {
 // rendered, so a hostile route cannot aim the reverse proxy at the internal networks.
 func TestValidateRejectsTargetsOutsideTheVMNetwork(t *testing.T) {
 	for _, ip := range []string{"127.0.0.1", "172.30.1.20", "172.28.255.255", "172.30.0.1", "8.8.8.8", "::1"} {
-		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcard}
+		r := model.Route{FQDN: "ok.pusan.dev", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
 		if err := Validate(r); err == nil {
 			t.Errorf("targetIp %s is outside the user VM network but was accepted", ip)
 		}
 	}
 	for _, ip := range []string{"172.29.0.1", "172.29.4.11", "172.29.255.254"} {
-		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcard}
+		r := model.Route{FQDN: "ok.pusan.dev", DesiredState: model.Present, TargetIP: ip, TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
 		if err := Validate(r); err != nil {
 			t.Errorf("targetIp %s is a user VM address but was rejected: %v", ip, err)
 		}
@@ -147,8 +161,8 @@ func TestValidateRejectsTargetsOutsideTheVMNetwork(t *testing.T) {
 // state used to reach the renderer with the target checks skipped.
 func TestValidateRejectsUnrecognisedDesiredStates(t *testing.T) {
 	for _, state := range []string{"present", "Present", "", "PRESENT ", "garbage"} {
-		r := model.Route{FQDN: "ok.pickle.pnuops.com", DesiredState: model.DesiredState(state),
-			TargetIP: "172.30.1.20", TargetPort: 8080, CertRef: model.CertRefWildcard}
+		r := model.Route{FQDN: "ok.pusan.dev", DesiredState: model.DesiredState(state),
+			TargetIP: "172.30.1.20", TargetPort: 8080, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
 		if err := Validate(r); err == nil {
 			t.Errorf("desiredState %q reached the renderer with an internal target", state)
 		}
@@ -156,7 +170,7 @@ func TestValidateRejectsUnrecognisedDesiredStates(t *testing.T) {
 }
 
 func TestValidateStillAcceptsAbsentWithoutATarget(t *testing.T) {
-	r := model.Route{FQDN: "gone.pickle.pnuops.com", DesiredState: model.Absent}
+	r := model.Route{FQDN: "gone.pusan.dev", DesiredState: model.Absent}
 	if err := Validate(r); err != nil {
 		t.Fatalf("ABSENT route needs no target but was rejected: %v", err)
 	}
@@ -165,5 +179,31 @@ func TestValidateStillAcceptsAbsentWithoutATarget(t *testing.T) {
 func TestFileName(t *testing.T) {
 	if got := FileName("a.b.com"); got != "a.b.com.conf" {
 		t.Fatalf("FileName = %s", got)
+	}
+}
+
+// An unconfigured root must fail rather than fall back. Rendering it against
+// whichever pair happened to be configured would pass `nginx -t` and then serve a
+// certificate that does not cover the name — a failure only the browser sees.
+func TestCertPathsRefusesAnUnconfiguredRoot(t *testing.T) {
+	r := model.Route{FQDN: "x.unknown.example", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.11", TargetPort: 80,
+		CertRef: model.CertRefWildcardPrefix + "unknown.example"}
+	if _, _, err := CertPaths(r, testParams(), "/etc/letsencrypt/live"); err == nil {
+		t.Fatal("expected an error for a root with no configured wildcard certificate")
+	}
+}
+
+// Each root resolves to its own material, so adding a root is configuration only.
+func TestCertPathsSelectsMaterialPerRoot(t *testing.T) {
+	r := model.Route{FQDN: "team.lab.example", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.11", TargetPort: 80,
+		CertRef: model.CertRefWildcardPrefix + "lab.example"}
+	cert, key, err := CertPaths(r, testParams(), "/etc/letsencrypt/live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert != "/etc/nginx/pickle-certs/lab-example.crt" || key != "/etc/nginx/pickle-certs/lab-example.key" {
+		t.Fatalf("second root got %s / %s", cert, key)
 	}
 }
