@@ -309,7 +309,7 @@ func TestApplyCustomDomainCertSuccessUpgradesToHTTPS(t *testing.T) {
 	}
 	// After issuance the vhost must be upgraded to the full HTTPS form.
 	conf := h.readConf(t, "shop.example.com")
-	if !strings.Contains(conf, "listen 127.0.0.1:8443 ssl;") || !strings.Contains(conf, "return 301 https://") {
+	if !strings.Contains(conf, "listen 127.0.0.1:8443 ssl proxy_protocol;") || !strings.Contains(conf, "return 301 https://") {
 		t.Fatalf("vhost not upgraded to HTTPS after cert issuance:\n%s", conf)
 	}
 	st := h.mgr.Status()

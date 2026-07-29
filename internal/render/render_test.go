@@ -40,7 +40,7 @@ func TestRenderPlatform(t *testing.T) {
 	}
 	for _, want := range []string{
 		"server_name team-alpha-a1b2.pusan.dev;",
-		"listen 127.0.0.1:8443 ssl;",
+		"listen 127.0.0.1:8443 ssl proxy_protocol;",
 		"ssl_certificate     /etc/nginx/pickle-certs/pusan-dev.crt;",
 		"proxy_pass http://172.29.4.11:8080;",
 		"proxy_set_header Connection $connection_upgrade;", // websocket upgrade
@@ -85,7 +85,7 @@ func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 	}
 	for _, want := range []string{
 		"return 301 https://$host$request_uri;",
-		"listen 127.0.0.1:8443 ssl;",
+		"listen 127.0.0.1:8443 ssl proxy_protocol;",
 		"ssl_certificate     /etc/letsencrypt/live/shop.example.com/fullchain.pem;",
 		"location /.well-known/acme-challenge/",
 	} {
