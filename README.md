@@ -110,6 +110,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_LISTEN` | 바인드 주소 | `172.30.1.10:9443` |
 | `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 허용 소스 IP 목록. 빈 집합이면 전원 거부 | `172.30.1.20` |
 | `PICKLE_PROXY_AGENT_WILDCARD_CERTS` | 플랫폼 루트 도메인별 와일드카드 인증서. `<루트>=<인증서>:<키>`를 쉼표로 나열합니다. 형식이 잘못되면 부팅을 거부합니다 | 없음 |
+| `PICKLE_PROXY_AGENT_LE_CERT_REF` | 커스텀 도메인을 뜻하는 `certRef` 값. 호출하는 쪽이 쓰는 값과 **정확히 같아야** 합니다 — 한쪽만 바꾸면 커스텀 도메인 적용이 전부 422가 됩니다 | `letsencrypt` |
 
 <details>
 <summary>전체 변수 표와 대상 호스트 사전 조건</summary>
@@ -130,7 +131,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 - nginx 베이스 설정: `include /etc/nginx/pickle.d/*.conf`가 유효하고, `http{}`
   컨텍스트에 `$pickle_client_ip` 변수가 정의돼 있어야 합니다(정의 예시는
   `scripts/nginx/pickle-base.conf` 주석에 있습니다).
-- certbot, `worker_shutdown_timeout` 설정, 와일드카드 인증서 파일.
+- certbot, `worker_shutdown_timeout` 설정, `PICKLE_PROXY_AGENT_WILDCARD_CERTS`에 등재한 루트별 와일드카드 인증서 파일.
 - certbot 갱신 타이머의 deploy-hook: 갱신 성공 후 `systemctl reload nginx`를 실행합니다.
 
 환경 파일이 없으면 배포 도구가 대상 호스트에서 토큰을 새로 만들어 쓰므로, 최초
