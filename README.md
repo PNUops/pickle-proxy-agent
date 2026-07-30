@@ -23,7 +23,7 @@
 ## 주요 기능
 
 플랫폼은 VM 신청·승인·생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
-삭제까지를 다룹니다. 이 저장소가 맡는 부분은 아래와 같습니다.
+삭제까지를 다룹니다. 이 레포지토리가 맡는 부분은 아래와 같습니다.
 
 - **도메인 공개 적용**: 사용자가 콘솔에서 공개한 도메인이 실제로 VM의 웹 서비스에 닿도록
   프록시를 맞춥니다.
@@ -141,7 +141,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 
 ## 전체 아키텍처
 
-<!-- arch:begin — 저장소 공통 블록입니다. 손으로 고치지 마세요. -->
+<!-- arch:begin — 레포지토리 공통 블록입니다. 손으로 고치지 마세요. -->
 ```mermaid
 flowchart LR
     subgraph ext [외부]
@@ -198,7 +198,7 @@ flowchart LR
     IB -.->|템플릿 빌드| PVE
 ```
 
-| 저장소 | 역할 |
+| 레포지토리 | 역할 |
 |---|---|
 | [pickle-api](https://github.com/PNUops/pickle-api) | REST API와 프로비저닝 워커 (Spring Boot 4, Java 25, PostgreSQL 18, JobRunr) |
 | [pickle-console](https://github.com/PNUops/pickle-console) | 사용자·관리자 웹 콘솔 (React 19, TypeScript) |
