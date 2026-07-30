@@ -23,7 +23,7 @@
 ## 주요 기능
 
 플랫폼은 VM 신청·승인·생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
-삭제까지를 다룹니다. 이 저장소가 맡는 부분은 아래와 같습니다.
+삭제까지를 다룹니다. 이 레포지토리가 맡는 부분은 아래와 같습니다.
 
 - **도메인 공개 적용**: 사용자가 콘솔에서 공개한 도메인이 실제로 VM의 웹 서비스에 닿도록
   프록시를 맞춥니다.
@@ -63,7 +63,7 @@ no-op(`409`)입니다. 네트워크 재시도가 몇 번을 오든 결과가 같
 vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적용 자체는 실패하지 않고
 `/status`에 드러납니다.
 
-## 계약 표면
+## API 표면
 
 내부 브리지 주소(`172.30.1.10:9443`)에만 바인드합니다. 이 주소로 향하는 DNAT이 없으므로
 외부에서는 도달할 수 없습니다.
@@ -141,6 +141,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 
 ## 전체 아키텍처
 
+<!-- arch:begin — 레포지토리 공통 블록입니다. 손으로 고치지 마세요. -->
 ```mermaid
 flowchart LR
     subgraph ext [외부]
@@ -167,6 +168,7 @@ flowchart LR
         DB[(PostgreSQL)]
         PVE[Proxmox VE]
         VM[사용자 VM]
+        IB[pickle-image-builder]
     end
 
     B --> PN
@@ -193,16 +195,19 @@ flowchart LR
     A -->|도메인 설정| P
     P -.->|vhost 적용| VN
     PVE -.->|생성/제어| VM
+    IB -.->|템플릿 빌드| PVE
 ```
 
-| 저장소 | 역할 |
+| 레포지토리 | 역할 |
 |---|---|
 | [pickle-api](https://github.com/PNUops/pickle-api) | REST API와 프로비저닝 워커 (Spring Boot 4, Java 25, PostgreSQL 18, JobRunr) |
 | [pickle-console](https://github.com/PNUops/pickle-console) | 사용자·관리자 웹 콘솔 (React 19, TypeScript) |
 | [pickle-sshgw](https://github.com/PNUops/pickle-sshgw) | SSH 게이트웨이와 웹 터미널 브리지 (sshpiperd, Go) |
 | [pickle-proxy-agent](https://github.com/PNUops/pickle-proxy-agent) | nginx 리버스 프록시 제어 에이전트 (Go) |
 | [pickle-relay-agent](https://github.com/PNUops/pickle-relay-agent) | 오프캠퍼스 릴레이의 nftables DNAT 에이전트 (Go) |
+| [pickle-image-builder](https://github.com/PNUops/pickle-image-builder) | 사용자 VM OS 이미지 빌드 레시피 (shell, virt-customize) |
 | [pickle-infra](https://github.com/PNUops/pickle-infra) (비공개) | 인프라 프로비저닝 스크립트와 운영 런북 (shell) |
 | [pickle-infra-example](https://github.com/PNUops/pickle-infra-example) | 프로비저닝·배포 스크립트와 런북 샘플 |
 | [pickle-secrets](https://github.com/PNUops/pickle-secrets) (비공개) | 호스트 시크릿 볼트 (git-crypt) |
 | [pickle-secrets-example](https://github.com/PNUops/pickle-secrets-example) | 볼트 레이아웃과 git-crypt 운용 절차 |
+<!-- arch:end -->
