@@ -111,6 +111,89 @@ func TestApplyAbsentRemovesButKeepsGeneration(t *testing.T) {
 	}
 }
 
+func TestApplyAbsentDeletesCustomDomainLineage(t *testing.T) {
+	h := newHarness(t)
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
+	if code, _ := h.mgr.Apply(context.Background(), r); code != 200 {
+		t.Fatalf("custom apply code %d", code)
+	}
+
+	code, res := h.mgr.Apply(context.Background(), model.Route{FQDN: "shop.example.com", DesiredState: model.Absent, Generation: 2})
+	if code != 200 || !res.Applied {
+		t.Fatalf("absent => %d %+v", code, res)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 1 || got[0] != "shop.example.com" {
+		t.Fatalf("certbot Delete calls = %v, want [shop.example.com]", got)
+	}
+	if h.cb.Exists("shop.example.com") {
+		t.Fatal("lineage still present after removal")
+	}
+	for _, c := range h.mgr.Status().Certs {
+		if c.FQDN == "shop.example.com" {
+			t.Fatalf("removed FQDN still reports a cert state: %+v", c)
+		}
+	}
+}
+
+func TestApplyAbsentPlatformDomainDoesNotCallDelete(t *testing.T) {
+	h := newHarness(t)
+	_, _ = h.mgr.Apply(context.Background(), platformRoute("a.pusan.dev", 1, "172.29.4.11"))
+
+	if code, _ := h.mgr.Apply(context.Background(), model.Route{FQDN: "a.pusan.dev", DesiredState: model.Absent, Generation: 2}); code != 200 {
+		t.Fatalf("absent code %d", code)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 0 {
+		t.Fatalf("certbot Delete called for a platform subdomain: %v", got)
+	}
+}
+
+func TestApplyAbsentSucceedsWhenLineageDeleteFails(t *testing.T) {
+	h := newHarness(t)
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
+	_, _ = h.mgr.Apply(context.Background(), r)
+	h.cb.DeleteErr = errors.New("certbot: unexpected error")
+
+	code, res := h.mgr.Apply(context.Background(), model.Route{FQDN: "shop.example.com", DesiredState: model.Absent, Generation: 2})
+	if code != 200 || !res.Applied || res.Generation != 2 {
+		t.Fatalf("absent with failing delete => %d %+v, want 200 applied gen=2", code, res)
+	}
+	if _, err := os.Stat(h.confPath("shop.example.com")); !os.IsNotExist(err) {
+		t.Fatal("vhost not removed")
+	}
+	var found bool
+	for _, c := range h.mgr.Status().Certs {
+		if c.FQDN == "shop.example.com" {
+			found = true
+			if c.State != model.CertFailed || !strings.Contains(c.Error, "unexpected error") {
+				t.Fatalf("cert status = %+v", c)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("lineage cleanup failure not surfaced on /status")
+	}
+}
+
+func TestSyncAllPruneDeletesCustomDomainLineage(t *testing.T) {
+	h := newHarness(t)
+	custom := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
+	_, _ = h.mgr.Apply(context.Background(), custom)
+	_, _ = h.mgr.Apply(context.Background(), platformRoute("keep.pusan.dev", 1, "172.29.4.11"))
+
+	code, res := h.mgr.SyncAll(context.Background(), model.SyncAllRequest{SnapshotGeneration: 60, Routes: []model.Route{
+		platformRoute("keep.pusan.dev", 2, "172.29.4.11"),
+	}})
+	if code != 200 || !res.Applied {
+		t.Fatalf("sync-all => %d %+v", code, res)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 1 || got[0] != "shop.example.com" {
+		t.Fatalf("certbot Delete calls = %v, want [shop.example.com]", got)
+	}
+	if h.cb.Exists("shop.example.com") {
+		t.Fatal("lineage still present after prune")
+	}
+}
+
 func TestApplyNginxTestFailureLeavesLiveConfigUntouched(t *testing.T) {
 	h := newHarness(t)
 	// Establish a good live vhost at gen 1.

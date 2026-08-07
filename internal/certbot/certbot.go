@@ -1,5 +1,5 @@
-// Package certbot obtains and inspects Let's Encrypt certificates for custom domains
-// via the webroot HTTP-01 challenge.
+// Package certbot obtains, inspects, and removes Let's Encrypt certificates for custom
+// domains via the webroot HTTP-01 challenge.
 //
 // It is an interface (Provider) so the manager can be tested without hitting Let's
 // Encrypt: the fake in tests simply materialises cert files (or reports failure). The
@@ -27,6 +27,9 @@ type Provider interface {
 	// Ensure obtains (HTTP-01 webroot) a cert for fqdn if absent. It returns nil
 	// once the cert exists on disk. Called only after the challenge vhost is live.
 	Ensure(ctx context.Context, fqdn string) error
+	// Delete drops fqdn's certificate and renewal lineage. Idempotent: an absent
+	// lineage is success.
+	Delete(ctx context.Context, fqdn string) error
 }
 
 // Certbot is the production Provider.
@@ -77,6 +80,25 @@ func (c *Certbot) Ensure(ctx context.Context, fqdn string) error {
 		args = append(args, "--register-unsafely-without-email")
 	}
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return &Error{Output: strings.TrimSpace(string(out)), Err: err}
+	}
+	return nil
+}
+
+// Delete removes fqdn's certificate and its renewal configuration. A lineage left
+// behind after the domain stops pointing here fails every subsequent `certbot renew`,
+// so the renewal timer sits permanently failed and a real renewal failure is no longer
+// distinguishable from the noise. The Exists gate makes the call idempotent without
+// depending on how certbot reports an unknown --cert-name.
+func (c *Certbot) Delete(ctx context.Context, fqdn string) error {
+	if !c.Exists(fqdn) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.Bin, "delete", "--cert-name", fqdn, "--non-interactive")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return &Error{Output: strings.TrimSpace(string(out)), Err: err}

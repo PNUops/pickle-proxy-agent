@@ -99,6 +99,7 @@ func (m *Manager) Apply(ctx context.Context, r model.Route) (int, model.ApplyRes
 			return 422, model.ApplyResult{Applied: false, Error: out}
 		}
 		_ = m.store.Record(r.FQDN, state.Entry{Generation: r.Generation, Present: false, AppliedAt: m.now()})
+		m.pruneCert(ctx, r.FQDN)
 		m.recordApply(true, "remove "+r.FQDN, "")
 		return 200, model.ApplyResult{Applied: true, Generation: r.Generation}
 	}
@@ -161,6 +162,27 @@ func (m *Manager) settleCert(ctx context.Context, r model.Route, path string, ce
 		return
 	}
 	_ = m.store.SetCert(r.FQDN, model.CertOK, "")
+}
+
+// pruneCert drops the Let's Encrypt lineage of an FQDN the agent no longer serves.
+// Must be called with mutateMu held, after the removal is live.
+//
+// A removal request carries no certRef, so the lineage itself is the discriminator: a
+// platform subdomain is served from its root's wildcard certificate and never has one,
+// while a custom domain always does. Left behind, that lineage fails every later
+// `certbot renew` — the domain no longer resolves here — and holds the renewal timer
+// in a permanently failed state.
+//
+// The removal is the point of the request and has already succeeded, so a failure here
+// only surfaces on /status; it never turns into a failed apply.
+func (m *Manager) pruneCert(ctx context.Context, fqdn string) {
+	if !m.certbot.Exists(fqdn) {
+		return
+	}
+	if err := m.certbot.Delete(ctx, fqdn); err != nil {
+		log.Printf("certbot delete %s failed: %v", fqdn, err)
+		_ = m.store.SetCert(fqdn, model.CertFailed, err.Error())
+	}
 }
 
 // SyncAll handles POST /sync-all: the manifest is authoritative.
@@ -253,6 +275,10 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: out}
 	}
 	_ = m.store.ReplaceAll(newEntries, req.SnapshotGeneration)
+
+	for _, fqdn := range pruned {
+		m.pruneCert(ctx, fqdn)
+	}
 
 	// Best-effort cert issuance for custom domains whose cert was not yet present.
 	for _, r := range pendingCustom {

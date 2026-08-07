@@ -68,7 +68,9 @@ type Config struct {
 	// 0 disables the limiter (used in tests).
 	RateLimitPerMin int
 
-	// ExecTimeout bounds any nginx/certbot subprocess.
+	// ExecTimeout bounds any nginx/certbot subprocess. A measured HTTP-01 issuance
+	// takes about 40s, so the bound has to leave room for a slow ACME round trip
+	// rather than cut issuance off mid-flight.
 	ExecTimeout time.Duration
 }
 
@@ -96,7 +98,7 @@ func Load() (Config, error) {
 		LEDir:           env("PICKLE_PROXY_AGENT_LE_DIR", "/etc/letsencrypt/live"),
 		CertbotEmail:    env("PICKLE_PROXY_AGENT_CERTBOT_EMAIL", ""),
 		RateLimitPerMin: 600,
-		ExecTimeout:     60 * time.Second,
+		ExecTimeout:     180 * time.Second,
 	}
 	wildcards, err := parseWildcardCerts(os.Getenv("PICKLE_PROXY_AGENT_WILDCARD_CERTS"))
 	if err != nil {

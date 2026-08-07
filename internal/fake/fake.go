@@ -49,12 +49,15 @@ func (f *Nginx) Counts() (tests, reloads int) {
 }
 
 // Certbot is a certbot.Provider double. Ensure "issues" a cert by flipping the
-// FQDN's Exists to true, unless EnsureErr is set (simulates an issuance failure).
+// FQDN's Exists to true, unless EnsureErr is set (simulates an issuance failure);
+// Delete flips it back, unless DeleteErr is set.
 type Certbot struct {
 	mu        sync.Mutex
 	Present   map[string]bool
 	EnsureErr error
+	DeleteErr error
 	Ensured   []string
+	Deleted   []string
 }
 
 // NewCertbot returns an empty Certbot double.
@@ -77,4 +80,23 @@ func (f *Certbot) Ensure(_ context.Context, fqdn string) error {
 	}
 	f.Present[fqdn] = true
 	return nil
+}
+
+// Delete records the call and, on success, marks the cert absent.
+func (f *Certbot) Delete(_ context.Context, fqdn string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Deleted = append(f.Deleted, fqdn)
+	if f.DeleteErr != nil {
+		return f.DeleteErr
+	}
+	delete(f.Present, fqdn)
+	return nil
+}
+
+// DeletedFQDNs returns a copy of the FQDNs Delete was called for.
+func (f *Certbot) DeletedFQDNs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Deleted...)
 }
