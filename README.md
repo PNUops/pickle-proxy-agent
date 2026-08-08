@@ -66,8 +66,11 @@ vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적
 
 커스텀 도메인을 내리면 vhost와 함께 그 도메인의 인증서·갱신 설정도 지웁니다. 남겨 두면
 도메인이 더는 이 호스트를 가리키지 않으므로 이후 갱신이 매번 실패하고, 갱신 타이머가
-계속 실패 상태로 남아 진짜 갱신 실패를 가립니다. 이 정리가 실패해도 공개 해제 자체는
-성공하며 `/status`에 드러납니다.
+계속 실패 상태로 남아 진짜 갱신 실패를 가립니다. 지울 것이 남았는지는 인증서 파일이
+아니라 갱신 설정(`renewal/<도메인>.conf`)이 남아 있는지로 판정합니다. `certbot renew`가
+훑는 것이 그 파일이고 `certbot delete`가 lineage를 찾는 것도 그 파일이라, 인증서 파일만
+남은 잔재는 갱신을 실패시키지도 certbot으로 지워지지도 않기 때문입니다. 이 정리가
+실패해도 공개 해제 자체는 성공하며 `/status`에 드러납니다.
 
 ## API 표면
 
@@ -129,7 +132,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단 vhost의 내부 HTTPS 리슨. `stream{}`이 :443을 소유합니다 | `127.0.0.1:8443` |
 | `PICKLE_PROXY_AGENT_CERTBOT_BIN` | certbot 바이너리 | `certbot` |
 | `PICKLE_PROXY_AGENT_WEBROOT` | HTTP-01 챌린지 webroot | `/var/www/certbot` |
-| `PICKLE_PROXY_AGENT_LE_DIR` | Let's Encrypt live 디렉터리 | `/etc/letsencrypt/live` |
+| `PICKLE_PROXY_AGENT_LE_DIR` | Let's Encrypt live 디렉터리. 갱신 설정 디렉터리는 certbot 배치 그대로 그 형제인 `renewal/`로 봅니다 | `/etc/letsencrypt/live` |
 | `PICKLE_PROXY_AGENT_CERTBOT_EMAIL` | certbot 등록 이메일 | 빈 값 |
 
 대상 호스트에 미리 갖춰져 있어야 하는 것들입니다.

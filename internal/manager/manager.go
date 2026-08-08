@@ -173,10 +173,15 @@ func (m *Manager) settleCert(ctx context.Context, r model.Route, path string, ce
 // `certbot renew` — the domain no longer resolves here — and holds the renewal timer
 // in a permanently failed state.
 //
+// The gate is LineageExists, not Exists: a lineage whose cert files are gone but whose
+// renewal configuration remains is exactly the one that makes renewal noise, and a live
+// cert alone is neither renewed nor deletable. Both are reachable only by hand, but
+// only one is worth a call.
+//
 // The removal is the point of the request and has already succeeded, so a failure here
 // only surfaces on /status; it never turns into a failed apply.
 func (m *Manager) pruneCert(ctx context.Context, fqdn string) {
-	if !m.certbot.Exists(fqdn) {
+	if !m.certbot.LineageExists(fqdn) {
 		return
 	}
 	if err := m.certbot.Delete(ctx, fqdn); err != nil {

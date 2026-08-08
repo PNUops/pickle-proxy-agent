@@ -51,9 +51,14 @@ func (f *Nginx) Counts() (tests, reloads int) {
 // Certbot is a certbot.Provider double. Ensure "issues" a cert by flipping the
 // FQDN's Exists to true, unless EnsureErr is set (simulates an issuance failure);
 // Delete flips it back, unless DeleteErr is set.
+//
+// Cert files and renewal lineage are tracked separately, exactly as certbot keeps
+// them in two directories: issuance creates both, deletion drops both, and
+// StrandLineage reproduces the half-broken state where only the lineage is left.
 type Certbot struct {
 	mu        sync.Mutex
 	Present   map[string]bool
+	Lineage   map[string]bool
 	EnsureErr error
 	DeleteErr error
 	Ensured   []string
@@ -61,13 +66,31 @@ type Certbot struct {
 }
 
 // NewCertbot returns an empty Certbot double.
-func NewCertbot() *Certbot { return &Certbot{Present: map[string]bool{}} }
+func NewCertbot() *Certbot {
+	return &Certbot{Present: map[string]bool{}, Lineage: map[string]bool{}}
+}
 
 // Exists reports whether a cert has been "issued" for fqdn.
 func (f *Certbot) Exists(fqdn string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.Present[fqdn]
+}
+
+// LineageExists reports whether a renewal lineage is still tracked for fqdn.
+func (f *Certbot) LineageExists(fqdn string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Lineage[fqdn]
+}
+
+// StrandLineage drops fqdn's cert files while keeping its renewal lineage — the
+// state a hand-removed live directory leaves behind.
+func (f *Certbot) StrandLineage(fqdn string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.Present, fqdn)
+	f.Lineage[fqdn] = true
 }
 
 // Ensure records the call and, on success, marks the cert present.
@@ -79,6 +102,7 @@ func (f *Certbot) Ensure(_ context.Context, fqdn string) error {
 		return f.EnsureErr
 	}
 	f.Present[fqdn] = true
+	f.Lineage[fqdn] = true
 	return nil
 }
 
@@ -91,6 +115,7 @@ func (f *Certbot) Delete(_ context.Context, fqdn string) error {
 		return f.DeleteErr
 	}
 	delete(f.Present, fqdn)
+	delete(f.Lineage, fqdn)
 	return nil
 }
 

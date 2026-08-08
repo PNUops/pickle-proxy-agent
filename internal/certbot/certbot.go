@@ -22,8 +22,12 @@ import (
 
 // Provider issues and inspects custom-domain certificates.
 type Provider interface {
-	// Exists reports whether a usable cert+key already exist for fqdn.
+	// Exists reports whether a usable cert+key already exist for fqdn — the
+	// question a vhost render asks, since nginx needs the files themselves.
 	Exists(fqdn string) bool
+	// LineageExists reports whether certbot still tracks a renewal lineage for
+	// fqdn, whether or not usable cert files remain — the question cleanup asks.
+	LineageExists(fqdn string) bool
 	// Ensure obtains (HTTP-01 webroot) a cert for fqdn if absent. It returns nil
 	// once the cert exists on disk. Called only after the challenge vhost is live.
 	Ensure(ctx context.Context, fqdn string) error
@@ -34,19 +38,31 @@ type Provider interface {
 
 // Certbot is the production Provider.
 type Certbot struct {
-	Bin     string
-	Webroot string
-	LEDir   string // /etc/letsencrypt/live
-	Email   string
-	Timeout time.Duration
+	Bin        string
+	Webroot    string
+	LEDir      string // /etc/letsencrypt/live
+	RenewalDir string // /etc/letsencrypt/renewal
+	Email      string
+	Timeout    time.Duration
 }
 
-// New returns a Certbot provider.
+// New returns a Certbot provider. The renewal directory is the live directory's
+// sibling: certbot lays out live/, archive/, and renewal/ side by side under its
+// config dir, so pointing the agent at a non-default live directory moves both. The
+// path is cleaned first — a configured value with a trailing slash would otherwise
+// put the renewal directory inside the live one.
 func New(bin, webroot, leDir, email string, timeout time.Duration) *Certbot {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
-	return &Certbot{Bin: bin, Webroot: webroot, LEDir: leDir, Email: email, Timeout: timeout}
+	return &Certbot{
+		Bin:        bin,
+		Webroot:    webroot,
+		LEDir:      leDir,
+		RenewalDir: filepath.Join(filepath.Dir(filepath.Clean(leDir)), "renewal"),
+		Email:      email,
+		Timeout:    timeout,
+	}
 }
 
 // paths returns the fullchain/privkey paths certbot writes for fqdn.
@@ -55,10 +71,32 @@ func (c *Certbot) paths(fqdn string) (cert, key string) {
 	return filepath.Join(base, "fullchain.pem"), filepath.Join(base, "privkey.pem")
 }
 
+// renewalConf returns the renewal configuration certbot writes for fqdn's lineage.
+func (c *Certbot) renewalConf(fqdn string) string {
+	return filepath.Join(c.RenewalDir, fqdn+".conf")
+}
+
 // Exists checks the live cert+key are both present.
 func (c *Certbot) Exists(fqdn string) bool {
 	cert, key := c.paths(fqdn)
 	return fileExists(cert) && fileExists(key)
+}
+
+// LineageExists checks the renewal configuration, not the live cert files, because
+// that file is what "certbot still knows about this lineage" actually means:
+//
+//   - `certbot renew` walks the renewal directory, so a renewal configuration left
+//     behind is precisely what fails every renewal from then on;
+//   - `certbot delete --cert-name` resolves the lineage through that same file and
+//     errors out when it is missing, so it is also the only shape delete can clean.
+//
+// The two directories outlive one another in both directions. Deletion removes the
+// renewal configuration first and the cert files after, so an interrupted delete
+// leaves live files with no lineage; a hand-removed live directory leaves the
+// reverse. Only the latter makes renewal noise, and only the latter is reclaimable
+// — the former is inert and certbot has no way to touch it anyway.
+func (c *Certbot) LineageExists(fqdn string) bool {
+	return fileExists(c.renewalConf(fqdn))
 }
 
 // Ensure runs certbot certonly --webroot for fqdn when the cert is absent.
@@ -90,10 +128,10 @@ func (c *Certbot) Ensure(ctx context.Context, fqdn string) error {
 // Delete removes fqdn's certificate and its renewal configuration. A lineage left
 // behind after the domain stops pointing here fails every subsequent `certbot renew`,
 // so the renewal timer sits permanently failed and a real renewal failure is no longer
-// distinguishable from the noise. The Exists gate makes the call idempotent without
-// depending on how certbot reports an unknown --cert-name.
+// distinguishable from the noise. The LineageExists gate makes the call idempotent
+// without depending on how certbot reports an unknown --cert-name.
 func (c *Certbot) Delete(ctx context.Context, fqdn string) error {
-	if !c.Exists(fqdn) {
+	if !c.LineageExists(fqdn) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
