@@ -135,6 +135,58 @@ func TestApplyAbsentDeletesCustomDomainLineage(t *testing.T) {
 	}
 }
 
+// A lineage whose cert files were removed by hand still has a renewal configuration,
+// which fails every `certbot renew` until it is reclaimed. The removal must clean it
+// up even though nothing is left for nginx to serve.
+func TestApplyAbsentDeletesLineageWithoutLiveCert(t *testing.T) {
+	h := newHarness(t)
+	r := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
+	if code, _ := h.mgr.Apply(context.Background(), r); code != 200 {
+		t.Fatalf("custom apply code %d", code)
+	}
+	h.cb.StrandLineage("shop.example.com")
+
+	code, res := h.mgr.Apply(context.Background(), model.Route{FQDN: "shop.example.com", DesiredState: model.Absent, Generation: 2})
+	if code != 200 || !res.Applied {
+		t.Fatalf("absent => %d %+v", code, res)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 1 || got[0] != "shop.example.com" {
+		t.Fatalf("certbot Delete calls = %v, want [shop.example.com]", got)
+	}
+	if h.cb.LineageExists("shop.example.com") {
+		t.Fatal("half-broken lineage survived the removal")
+	}
+}
+
+// The mirror of the cleanup tests: a custom domain the manifest still lists keeps its
+// lineage. Widening the cleanup gate must reclaim only what was being missed — a
+// lineage dropped while the domain is still served costs a real certificate.
+func TestSyncAllKeepsLineageOfListedCustomDomain(t *testing.T) {
+	h := newHarness(t)
+	custom := model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.20", TargetPort: 3000, CertRef: "letsencrypt"}
+	if code, _ := h.mgr.Apply(context.Background(), custom); code != 200 {
+		t.Fatalf("custom apply code %d", code)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 0 {
+		t.Fatalf("apply PRESENT deleted a lineage: %v", got)
+	}
+
+	custom.Generation = 2
+	code, res := h.mgr.SyncAll(context.Background(), model.SyncAllRequest{SnapshotGeneration: 60, Routes: []model.Route{
+		custom,
+		platformRoute("keep.pusan.dev", 2, "172.29.4.11"),
+	}})
+	if code != 200 || !res.Applied {
+		t.Fatalf("sync-all => %d %+v", code, res)
+	}
+	if got := h.cb.DeletedFQDNs(); len(got) != 0 {
+		t.Fatalf("certbot Delete called for a served domain: %v", got)
+	}
+	if !h.cb.LineageExists("shop.example.com") || !h.cb.Exists("shop.example.com") {
+		t.Fatal("a served custom domain lost its certificate")
+	}
+}
+
 func TestApplyAbsentPlatformDomainDoesNotCallDelete(t *testing.T) {
 	h := newHarness(t)
 	_, _ = h.mgr.Apply(context.Background(), platformRoute("a.pusan.dev", 1, "172.29.4.11"))
