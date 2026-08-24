@@ -90,7 +90,7 @@ vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적
 ## 시작하기
 
 ```bash
-scripts/verify.sh        # shellcheck → gofmt → go vet → build → test → 공개 위생 검사
+scripts/verify.sh        # shellcheck → gofmt → go vet → build → test
 ```
 
 Go 1.26이 필요합니다. `gofmt -l`이 하드 게이트라 코드는 항상 gofmt 정렬 상태입니다.
