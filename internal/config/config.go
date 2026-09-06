@@ -48,10 +48,11 @@ type Config struct {
 	// a platform subdomain instead of saying so.
 	LECertRef string
 
-	// WildcardCerts is the Cloudflare Origin CA material per platform root domain,
-	// keyed by the root ("pusan.dev"). Several roots can be served at once, each
-	// with its own certificate; a route naming a root that is absent is refused
-	// rather than rendered with another root's pair.
+	// WildcardCerts is the wildcard certificate material per platform root domain,
+	// keyed by the root ("pusan.dev"). The operator issues and installs it; the
+	// agent only consumes the paths it is given. Several roots can be served at
+	// once, each with its own certificate; a route naming a root that is absent is
+	// refused rather than rendered with another root's pair.
 	WildcardCerts map[string]render.CertPair
 
 	// HTTPSListen is the internal HTTPS listen address for terminated vhosts. The
@@ -119,7 +120,7 @@ func Load() (Config, error) {
 // parseWildcardCerts reads PICKLE_PROXY_AGENT_WILDCARD_CERTS, a comma-separated
 // list of "<root>=<certPath>:<keyPath>" entries — one per platform root domain:
 //
-//	pusan.dev=/etc/nginx/pickle-certs/pusan-dev.crt:/etc/nginx/pickle-certs/pusan-dev.key
+//	pusan.dev=/etc/letsencrypt/live/pusan.dev/fullchain.pem:/etc/letsencrypt/live/pusan.dev/privkey.pem
 //
 // There is no default. A blank value yields an empty map, which is not fatal by
 // itself (an agent serving only custom domains needs none) but makes every

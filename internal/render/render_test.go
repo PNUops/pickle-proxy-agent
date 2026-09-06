@@ -98,6 +98,8 @@ func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 // The vhosts sit behind the TLS-terminating stream tier, whose PROXY header is the
 // only carrier of the real client address: trusting a client-IP header from the
 // loopback peer, or leaving $remote_addr as 127.0.0.1, both lose the true client.
+// Nothing terminates traffic ahead of this host, so the peer restored from the PROXY
+// header is what every vhost forwards, and no request header is consulted at all.
 func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 	p := testParams()
 	for _, r := range []model.Route{
@@ -108,13 +110,18 @@ func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"set_real_ip_from 127.0.0.1;", "real_ip_header proxy_protocol;", "X-Real-IP $pickle_client_ip;"} {
+		for _, want := range []string{"set_real_ip_from 127.0.0.1;", "real_ip_header proxy_protocol;", "X-Real-IP $remote_addr;"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: vhost missing %q in:\n%s", r.FQDN, want, out)
 			}
 		}
-		if strings.Contains(out, "real_ip_header CF-Connecting-IP") || strings.Contains(out, "pickle-realip") {
-			t.Errorf("%s: vhost still trusts a header from the loopback peer:\n%s", r.FQDN, out)
+		// The forwarded address must come from the PROXY header and nowhere else: a
+		// header form, or the variable that used to choose between the two, would
+		// let a caller that can reach the origin pick the address that gets audited.
+		for _, forbidden := range []string{"real_ip_header CF-Connecting-IP", "pickle-realip", "pickle_client_ip"} {
+			if strings.Contains(out, forbidden) {
+				t.Errorf("%s: vhost still carries %q, which lets the peer name its own address:\n%s", r.FQDN, forbidden, out)
+			}
 		}
 	}
 }
