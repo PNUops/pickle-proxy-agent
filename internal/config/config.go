@@ -59,6 +59,13 @@ type Config struct {
 	// stream{} block owns :443 and forwards non-passthrough SNIs here.
 	HTTPSListen string
 
+	// SiteLimits renders the default per-site request and connection limits into
+	// every published vhost (PICKLE_PROXY_AGENT_SITE_LIMITS, default on). Off is
+	// for a host whose base nginx config does not declare the zones the limits
+	// name: a vhost referencing a zone that does not exist fails `nginx -t`, and
+	// that failure rejects the entire config, not the one file.
+	SiteLimits bool
+
 	// Custom-domain / certbot settings.
 	CertbotBin   string
 	Webroot      string
@@ -83,7 +90,8 @@ func env(key, def string) string {
 }
 
 // Load reads the configuration from the environment, applying production defaults.
-// It returns an error only for values that cannot have a safe default (the token).
+// It returns an error for a missing token and for configuration it cannot read at
+// all: a malformed wildcard entry, or an on/off value spelled some other way.
 func Load() (Config, error) {
 	c := Config{
 		Listen:          env("PICKLE_PROXY_AGENT_LISTEN", "172.30.1.10:9443"),
@@ -106,6 +114,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c.WildcardCerts = wildcards
+	siteLimits, err := parseOnOff("PICKLE_PROXY_AGENT_SITE_LIMITS", true)
+	if err != nil {
+		return Config{}, err
+	}
+	c.SiteLimits = siteLimits
 	switch t := strings.TrimSpace(c.Token); t {
 	case "":
 		return Config{}, fmt.Errorf("PICKLE_PROXY_AGENT_TOKEN is required (empty token would leave the agent unauthenticated)")
@@ -151,6 +164,25 @@ func parseWildcardCerts(s string) (map[string]render.CertPair, error) {
 		out[root] = render.CertPair{Cert: certPath, Key: keyPath}
 	}
 	return out, nil
+}
+
+// parseOnOff reads a boolean setting, accepting only the four spellings an env file
+// is written with. An unset variable takes the default; a variable set to anything
+// else, blank included, is fatal rather than read as the default. This one decides
+// whether published sites carry a rate limit at all, and a typo that quietly turned
+// it off would show up as an outage under load, long after the restart that caused it.
+func parseOnOff(key string, def bool) (bool, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return def, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "on", "true":
+		return true, nil
+	case "off", "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s is %q: want on or off (true/false also accepted)", key, raw)
 }
 
 func splitList(s string) []string {

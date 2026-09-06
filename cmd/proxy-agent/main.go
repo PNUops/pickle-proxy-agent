@@ -42,6 +42,7 @@ func main() {
 		LECertRef:     cfg.LECertRef,
 		WildcardCerts: cfg.WildcardCerts,
 		Webroot:       cfg.Webroot,
+		SiteLimits:    cfg.SiteLimits,
 	}
 	ng := nginx.New(cfg.NginxBin, cfg.ExecTimeout)
 	cb := certbot.New(cfg.CertbotBin, cfg.Webroot, cfg.LEDir, cfg.CertbotEmail, cfg.ExecTimeout)

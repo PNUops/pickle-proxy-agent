@@ -93,6 +93,9 @@ vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적
 `X-Real-IP`로 전달합니다. 요청 헤더에 실려 온 주소는 읽지 않습니다. 읽는다면 이 호스트에
 닿을 수 있는 누구든 기록에 남을 주소를 스스로 정할 수 있게 됩니다.
 
+공개된 사이트의 vhost에는 요청 빈도와 동시 연결 상한이 함께 들어갑니다. 상한은 방문자
+주소 단위로 걸리고, 인증서 발급 중에 잠깐 올라가는 챌린지 전용 vhost는 대상이 아닙니다.
+
 ## 시작하기
 
 ```bash
@@ -125,6 +128,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_LISTEN` | 바인드 주소 | `172.30.1.10:9443` |
 | `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 허용 소스 IP 목록. 빈 집합이면 전원 거부 | `172.30.1.20` |
 | `PICKLE_PROXY_AGENT_WILDCARD_CERTS` | 플랫폼 루트 도메인별 와일드카드 인증서. `<루트>=<인증서>:<키>`를 쉼표로 나열합니다. 형식이 잘못되면 부팅을 거부합니다 | 없음 |
+| `PICKLE_PROXY_AGENT_SITE_LIMITS` | 공개된 사이트의 vhost에 요청·연결 상한을 넣습니다. `on`/`off`(`true`/`false`도 받습니다) 외의 값은 부팅을 거부합니다 | `on` |
 | `PICKLE_PROXY_AGENT_LE_CERT_REF` | 커스텀 도메인을 뜻하는 `certRef` 값. 호출하는 쪽이 쓰는 값과 **정확히 같아야** 합니다 — 한쪽만 바꾸면 커스텀 도메인 적용이 전부 422가 됩니다 | `letsencrypt` |
 
 <details>
@@ -146,6 +150,10 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 - nginx 베이스 설정: `include /etc/nginx/pickle.d/*.conf`와 웹소켓 업그레이드 map이
   `http{}` 컨텍스트에 들어 있어야 합니다(`scripts/nginx/pickle-base.conf`).
 - certbot, `worker_shutdown_timeout` 설정, `PICKLE_PROXY_AGENT_WILDCARD_CERTS`에 등재한 루트별 와일드카드 인증서 파일.
+- `PICKLE_PROXY_AGENT_SITE_LIMITS`가 `on`이면 vhost가 참조하는 `limit_req`·`limit_conn`
+  zone(`pickle_site`, `pickle_site_perip`)이 `http{}` 컨텍스트에 먼저 선언돼 있어야 합니다.
+  nginx는 zone 이름을 파싱 시점에 확인하므로, 선언 전에는 `nginx -t`가 설정 전체를
+  거부합니다.
 - certbot 갱신 타이머의 deploy-hook: 갱신 성공 후 `systemctl reload nginx`를 실행합니다.
 
 환경 파일이 없으면 배포 도구가 대상 호스트에서 토큰을 새로 만들어 쓰므로, 최초

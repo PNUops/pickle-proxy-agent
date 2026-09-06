@@ -48,6 +48,12 @@ type Params struct {
 	// not cover the name, which fails in the browser rather than here.
 	WildcardCerts map[string]CertPair
 	Webroot       string
+	// SiteLimits emits the default per-site request and connection limits into
+	// every rendered HTTPS vhost. Nothing filters this traffic ahead of the
+	// origin, so those limits are all that stands between a published site and a
+	// flood. It is a flag rather than an unconditional block because the limits
+	// name zones defined outside anything this agent writes: see siteLimits.
+	SiteLimits bool
 }
 
 // proxyCommon is the shared, websocket-upgrade-aware proxy block. `$connection_upgrade`
@@ -72,6 +78,20 @@ const proxyCommon = `        proxy_http_version 1.1;
         proxy_send_timeout 3600s;
 `
 
+// siteLimits is the default per-site bound, emitted into the location block of both
+// HTTPS templates when Params.SiteLimits is set. The burst allows a page and its
+// assets to load in one go; the connection cap is per client address, which is the
+// PROXY-restored peer rather than anything the request can claim.
+//
+// The two zones are declared once in the base http{} context, which the agent does
+// not write. nginx resolves a zone name while parsing, so a vhost naming a zone that
+// has not been declared yet fails `nginx -t`, and that failure rejects the whole
+// config rather than the one file. That ordering is why this is a flag: an agent on
+// a host whose base config predates the zones runs with it off until they land.
+const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
+        limit_conn pickle_site_perip 50;
+`
+
 type vhostData struct {
 	FQDN        string
 	Generation  int64
@@ -82,6 +102,7 @@ type vhostData struct {
 	KeyPath     string
 	Webroot     string
 	ProxyCommon string
+	Limits      string
 }
 
 var platformTmpl = template.Must(template.New("platform").Parse(
@@ -106,7 +127,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-        proxy_pass http://{{.Target}};
+{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -144,7 +165,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-        proxy_pass http://{{.Target}};
+{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -220,6 +241,9 @@ func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (
 		KeyPath:     keyPath,
 		Webroot:     p.Webroot,
 		ProxyCommon: proxyCommon,
+	}
+	if p.SiteLimits {
+		d.Limits = siteLimits
 	}
 	var tmpl *template.Template
 	switch {

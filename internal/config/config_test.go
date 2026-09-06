@@ -33,6 +33,40 @@ func TestLoadDefaults(t *testing.T) {
 	if c.HTTPSListen != "127.0.0.1:8443" {
 		t.Errorf("HTTPSListen default = %s", c.HTTPSListen)
 	}
+	if !c.SiteLimits {
+		t.Error("site limits must default on: an agent installed without the variable still publishes limited sites")
+	}
+}
+
+func TestSiteLimitsSpellings(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"on": true, "true": true, "ON": true, " on ": true,
+		"off": false, "false": false, "Off": false,
+	} {
+		t.Setenv("PICKLE_PROXY_AGENT_TOKEN", "tok")
+		t.Setenv("PICKLE_PROXY_AGENT_SITE_LIMITS", raw)
+		c, err := Load()
+		if err != nil {
+			t.Errorf("Load rejected %q: %v", raw, err)
+			continue
+		}
+		if c.SiteLimits != want {
+			t.Errorf("SiteLimits for %q = %v, want %v", raw, c.SiteLimits, want)
+		}
+	}
+}
+
+// A value nobody can read at a glance must stop the boot rather than be read as the
+// default: a typo that quietly turned the limits off would surface as an outage under
+// load, long after the restart that caused it.
+func TestSiteLimitsRejectsAnythingElse(t *testing.T) {
+	for _, bad := range []string{"", "1", "0", "yes", "no", "enabled", "on-ish"} {
+		t.Setenv("PICKLE_PROXY_AGENT_TOKEN", "tok")
+		t.Setenv("PICKLE_PROXY_AGENT_SITE_LIMITS", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load accepted site-limit value %q", bad)
+		}
+	}
 }
 
 func TestAllowedSourcesParsing(t *testing.T) {
