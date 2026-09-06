@@ -151,9 +151,10 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
   `http{}` 컨텍스트에 들어 있어야 합니다(`scripts/nginx/pickle-base.conf`).
 - certbot, `worker_shutdown_timeout` 설정, `PICKLE_PROXY_AGENT_WILDCARD_CERTS`에 등재한 루트별 와일드카드 인증서 파일.
 - `PICKLE_PROXY_AGENT_SITE_LIMITS`가 `on`이면 vhost가 참조하는 `limit_req`·`limit_conn`
-  zone(`pickle_site`, `pickle_site_perip`)이 `http{}` 컨텍스트에 먼저 선언돼 있어야 합니다.
-  nginx는 zone 이름을 파싱 시점에 확인하므로, 선언 전에는 `nginx -t`가 설정 전체를
-  거부합니다.
+  zone(`pickle_site`, `pickle_site_perip`)이 `http{}` 컨텍스트 어딘가에 선언돼 있어야
+  합니다. 선언 위치의 순서는 상관없고, 어디에도 없으면 `nginx -t`가 설정 전체를
+  거부합니다. 이때 실패는 `syntax is ok` 뒤에 `zero size shared memory zone`으로 나오므로
+  성공 여부는 문구가 아니라 종료 코드로 판정합니다.
 - certbot 갱신 타이머의 deploy-hook: 갱신 성공 후 `systemctl reload nginx`를 실행합니다.
 
 환경 파일이 없으면 배포 도구가 대상 호스트에서 토큰을 새로 만들어 쓰므로, 최초

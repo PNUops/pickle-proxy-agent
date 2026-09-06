@@ -84,10 +84,11 @@ const proxyCommon = `        proxy_http_version 1.1;
 // PROXY-restored peer rather than anything the request can claim.
 //
 // The two zones are declared once in the base http{} context, which the agent does
-// not write. nginx resolves a zone name while parsing, so a vhost naming a zone that
-// has not been declared yet fails `nginx -t`, and that failure rejects the whole
-// config rather than the one file. That ordering is why this is a flag: an agent on
-// a host whose base config predates the zones runs with it off until they land.
+// not write. They need only exist by the end of the parse, so where they are declared
+// relative to a rendered vhost does not matter. Existing at all does: a vhost naming a
+// zone declared nowhere fails `nginx -t` for the entire configuration rather than for
+// the one file. That is why this is a flag, so an agent on a host whose base config
+// does not carry the zones yet runs with it off until they land.
 const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
         limit_conn pickle_site_perip 50;
 `
