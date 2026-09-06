@@ -56,7 +56,7 @@ no-op(`409`)입니다. 네트워크 재시도가 몇 번을 오든 결과가 같
 죽어도 상태 파일이 반쯤 쓰인 채 남지 않습니다.
 
 인증서는 두 갈래입니다. 플랫폼 서브도메인은 자기 루트 도메인의 와일드카드 인증서를
-사용합니다(`certRef`가 `wildcard:<루트>` 형태로 루트를 지목합니다 — 설정에 없는 루트는
+사용합니다(`certRef`가 `wildcard:<루트>` 형태로 루트를 지목합니다. 설정에 없는 루트는
 다른 루트의 인증서로 렌더하는 대신 적용을 거부합니다. 이름을 담지 않은 인증서는
 `nginx -t`를 통과한 뒤 브라우저에서만 실패하기 때문입니다). 이 와일드카드 인증서는
 운영자가 발급해 대상 호스트에 설치하고, 에이전트는 설정으로 받은 경로만 참조합니다.
@@ -128,7 +128,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_LISTEN` | 바인드 주소 | `172.30.1.10:9443` |
 | `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 허용 소스 IP 목록. 빈 집합이면 전원 거부 | `172.30.1.20` |
 | `PICKLE_PROXY_AGENT_WILDCARD_CERTS` | 플랫폼 루트 도메인별 와일드카드 인증서. `<루트>=<인증서>:<키>`를 쉼표로 나열합니다. 형식이 잘못되면 부팅을 거부합니다 | 없음 |
-| `PICKLE_PROXY_AGENT_SITE_LIMITS` | 공개된 사이트의 vhost에 요청·연결 상한을 넣습니다. `on`/`off`(`true`/`false`도 받습니다) 외의 값은 부팅을 거부합니다 | `on` |
+| `PICKLE_PROXY_AGENT_SITE_LIMITS` | 공개된 사이트의 vhost에 요청 상한과 연결 상한을 넣습니다. `on`/`off`(`true`/`false`도 받습니다) 외의 값은 부팅을 거부합니다 | `on` |
 | `PICKLE_PROXY_AGENT_LE_CERT_REF` | 커스텀 도메인을 뜻하는 `certRef` 값. 호출하는 쪽이 쓰는 값과 **정확히 같아야** 합니다 — 한쪽만 바꾸면 커스텀 도메인 적용이 전부 422가 됩니다 | `letsencrypt` |
 
 <details>
@@ -150,7 +150,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 - nginx 베이스 설정: `include /etc/nginx/pickle.d/*.conf`와 웹소켓 업그레이드 map이
   `http{}` 컨텍스트에 들어 있어야 합니다(`scripts/nginx/pickle-base.conf`).
 - certbot, `worker_shutdown_timeout` 설정, `PICKLE_PROXY_AGENT_WILDCARD_CERTS`에 등재한 루트별 와일드카드 인증서 파일.
-- `PICKLE_PROXY_AGENT_SITE_LIMITS`가 `on`이면 vhost가 참조하는 `limit_req`·`limit_conn`
+- `PICKLE_PROXY_AGENT_SITE_LIMITS`가 `on`이면 vhost가 참조하는 `limit_req`와 `limit_conn`
   zone(`pickle_site`, `pickle_site_perip`)이 `http{}` 컨텍스트 어딘가에 선언돼 있어야
   합니다. 선언 위치의 순서는 상관없고, 어디에도 없으면 `nginx -t`가 설정 전체를
   거부합니다. 이때 실패는 `syntax is ok` 뒤에 `zero size shared memory zone`으로 나오므로
