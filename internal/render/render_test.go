@@ -21,8 +21,20 @@ func testParams() Params {
 				Key:  "/etc/nginx/pickle-certs/lab-example.key",
 			},
 		},
-		Webroot: "/var/www/certbot",
+		Webroot:    "/var/www/certbot",
+		SiteLimits: true,
 	}
+}
+
+// platformRoute and customRoute are the two shapes every published vhost takes.
+func platformRoute() model.Route {
+	return model.Route{FQDN: "x.pusan.dev", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"}
+}
+
+func customRoute() model.Route {
+	return model.Route{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1,
+		TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "letsencrypt"}
 }
 
 func TestRenderPlatform(t *testing.T) {
@@ -98,23 +110,83 @@ func TestRenderCustomChallengeThenHTTPS(t *testing.T) {
 // The vhosts sit behind the TLS-terminating stream tier, whose PROXY header is the
 // only carrier of the real client address: trusting a client-IP header from the
 // loopback peer, or leaving $remote_addr as 127.0.0.1, both lose the true client.
+// Nothing terminates traffic ahead of this host, so the peer restored from the PROXY
+// header is what every vhost forwards, and no request header is consulted at all.
 func TestRenderRecoversClientIPFromProxyProtocol(t *testing.T) {
 	p := testParams()
-	for _, r := range []model.Route{
-		{FQDN: "x.pusan.dev", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: model.CertRefWildcardPrefix + "pusan.dev"},
-		{FQDN: "shop.example.com", DesiredState: model.Present, Generation: 1, TargetIP: "172.29.4.9", TargetPort: 80, CertRef: "letsencrypt"},
-	} {
+	for _, r := range []model.Route{platformRoute(), customRoute()} {
 		out, err := Render(r, p, "/c.pem", "/k.pem", true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"set_real_ip_from 127.0.0.1;", "real_ip_header proxy_protocol;", "X-Real-IP $pickle_client_ip;"} {
+		for _, want := range []string{"set_real_ip_from 127.0.0.1;", "real_ip_header proxy_protocol;", "X-Real-IP $remote_addr;"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: vhost missing %q in:\n%s", r.FQDN, want, out)
 			}
 		}
-		if strings.Contains(out, "real_ip_header CF-Connecting-IP") || strings.Contains(out, "pickle-realip") {
-			t.Errorf("%s: vhost still trusts a header from the loopback peer:\n%s", r.FQDN, out)
+		// The forwarded address must come from the PROXY header and nowhere else: a
+		// header form, or the variable that used to choose between the two, would
+		// let a caller that can reach the origin pick the address that gets audited.
+		for _, forbidden := range []string{"real_ip_header CF-Connecting-IP", "pickle-realip", "pickle_client_ip"} {
+			if strings.Contains(out, forbidden) {
+				t.Errorf("%s: vhost still carries %q, which lets the peer name its own address:\n%s", r.FQDN, forbidden, out)
+			}
+		}
+	}
+}
+
+// Nothing filters traffic ahead of the origin, so the limits in the vhost are what a
+// published site has against a flood. Both HTTPS shapes carry them, in location /
+// ahead of proxy_pass, which keeps the bound on the proxied traffic and leaves the
+// :80 redirect and acme-challenge server of a custom domain untouched.
+func TestRenderSiteLimitsAppearInBothHTTPSShapes(t *testing.T) {
+	const inLocation = `    location / {
+        limit_req zone=pickle_site burst=60 nodelay;
+        limit_conn pickle_site_perip 50;
+        proxy_pass http://`
+	for _, r := range []model.Route{platformRoute(), customRoute()} {
+		out, err := Render(r, testParams(), "/c.pem", "/k.pem", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, inLocation) {
+			t.Errorf("%s: limits are not the first directives of location /:\n%s", r.FQDN, out)
+		}
+	}
+}
+
+// The challenge vhost is up only long enough for an ACME HTTP-01 round trip. A limit
+// there would bound the issuance it exists to complete, so it stays unlimited.
+func TestRenderSiteLimitsSkipTheChallengeVhost(t *testing.T) {
+	challenge, err := Render(customRoute(), testParams(), "/c.pem", "/k.pem", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"limit_req", "limit_conn"} {
+		if strings.Contains(challenge, forbidden) {
+			t.Errorf("challenge vhost carries %q in:\n%s", forbidden, challenge)
+		}
+	}
+}
+
+// With the flag off nothing may reference a zone, in any shape: the zones live in
+// config this agent does not write, and a vhost naming one that is not declared
+// fails `nginx -t` for the whole config rather than for the one file.
+func TestRenderWithoutSiteLimitsNamesNoZone(t *testing.T) {
+	p := testParams()
+	p.SiteLimits = false
+	for _, r := range []model.Route{platformRoute(), customRoute()} {
+		for _, certReady := range []bool{true, false} {
+			out, err := Render(r, p, "/c.pem", "/k.pem", certReady)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"limit_req", "limit_conn", "pickle_site"} {
+				if strings.Contains(out, forbidden) {
+					t.Errorf("%s (certReady=%v): vhost carries %q with limits off:\n%s",
+						r.FQDN, certReady, forbidden, out)
+				}
+			}
 		}
 	}
 }

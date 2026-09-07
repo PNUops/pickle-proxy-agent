@@ -3,7 +3,7 @@
 // Two shapes are produced, selected by certRef:
 //
 //   - platform subdomains (certRef "wildcard:<root>"): a single HTTPS server on
-//     the internal 127.0.0.1:8443 tier using the Cloudflare Origin CA wildcard
+//     the internal 127.0.0.1:8443 tier using the wildcard certificate material
 //     configured for that root domain.
 //   - custom domains (certRef equal to the configured Let's Encrypt ref): a
 //     per-domain Let's Encrypt cert. Because
@@ -48,23 +48,49 @@ type Params struct {
 	// not cover the name, which fails in the browser rather than here.
 	WildcardCerts map[string]CertPair
 	Webroot       string
+	// SiteLimits emits the default per-site request and connection limits into
+	// every rendered HTTPS vhost. Nothing filters this traffic ahead of the
+	// origin, so those limits are all that stands between a published site and a
+	// flood. It is a flag rather than an unconditional block because the limits
+	// name zones defined outside anything this agent writes: see siteLimits.
+	SiteLimits bool
 }
 
 // proxyCommon is the shared, websocket-upgrade-aware proxy block. `$connection_upgrade`
 // comes from the `map $http_upgrade $connection_upgrade` defined once in the base
-// nginx http{} context by the deploy (see scripts/nginx/pickle-base.conf), and
-// `$pickle_client_ip` from the operator-managed client-IP validation map described
-// in the same file: it is the peer address, except when the peer is a known CDN
-// edge, where the edge's client-IP header is trusted instead.
+// nginx http{} context by the deploy (see scripts/nginx/pickle-base.conf).
+//
+// X-Real-IP carries $remote_addr because the vhost has already restored the peer
+// from the PROXY header the TLS tier prepends (`set_real_ip_from 127.0.0.1;
+// real_ip_header proxy_protocol`, emitted by both HTTPS templates below), so
+// $remote_addr is the true client for every request. Nothing terminates traffic
+// ahead of this host, so no request header carries a client address worth
+// believing: forwarding one instead would let anyone able to reach the origin
+// choose the address the site and the audit trail record.
 const proxyCommon = `        proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $pickle_client_ip;
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
+`
+
+// siteLimits is the default per-site bound, emitted into the location block of both
+// HTTPS templates when Params.SiteLimits is set. The burst allows a page and its
+// assets to load in one go; the connection cap is per client address, which is the
+// PROXY-restored peer rather than anything the request can claim.
+//
+// The two zones are declared once in the base http{} context, which the agent does
+// not write. They need only exist by the end of the parse, so where they are declared
+// relative to a rendered vhost does not matter. Existing at all does: a vhost naming a
+// zone declared nowhere fails `nginx -t` for the entire configuration rather than for
+// the one file. That is why this is a flag, so an agent on a host whose base config
+// does not carry the zones yet runs with it off until they land.
+const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
+        limit_conn pickle_site_perip 50;
 `
 
 type vhostData struct {
@@ -77,6 +103,7 @@ type vhostData struct {
 	KeyPath     string
 	Webroot     string
 	ProxyCommon string
+	Limits      string
 }
 
 var platformTmpl = template.Must(template.New("platform").Parse(
@@ -91,18 +118,17 @@ server {
     ssl_certificate_key {{.KeyPath}};
 
     # This socket's only peer is the TLS-terminating stream tier, which prepends a
-    # PROXY header carrying the true public peer; restore it into $remote_addr.
-    # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
-    # peer may be believed (both come from the base http{} wiring). The listen
-    # line has to declare proxy_protocol for the same reason the hand-written
-    # vhosts on this socket do: nginx takes the socket's protocol options from
-    # one server block, so a vhost that omits it disagrees with its neighbours
-    # and nginx warns on every reload.
+    # PROXY header carrying the true public peer; restore it into $remote_addr,
+    # which is what the proxy block below forwards as X-Real-IP. The listen line
+    # has to declare proxy_protocol for the same reason the hand-written vhosts
+    # on this socket do: nginx takes the socket's protocol options from one
+    # server block, so a vhost that omits it disagrees with its neighbours and
+    # nginx warns on every reload.
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
 
     location / {
-        proxy_pass http://{{.Target}};
+{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -130,18 +156,17 @@ server {
     ssl_certificate_key {{.KeyPath}};
 
     # This socket's only peer is the TLS-terminating stream tier, which prepends a
-    # PROXY header carrying the true public peer; restore it into $remote_addr.
-    # $pickle_client_ip then decides whether a CF-Connecting-IP header from that
-    # peer may be believed (both come from the base http{} wiring). The listen
-    # line has to declare proxy_protocol for the same reason the hand-written
-    # vhosts on this socket do: nginx takes the socket's protocol options from
-    # one server block, so a vhost that omits it disagrees with its neighbours
-    # and nginx warns on every reload.
+    # PROXY header carrying the true public peer; restore it into $remote_addr,
+    # which is what the proxy block below forwards as X-Real-IP. The listen line
+    # has to declare proxy_protocol for the same reason the hand-written vhosts
+    # on this socket do: nginx takes the socket's protocol options from one
+    # server block, so a vhost that omits it disagrees with its neighbours and
+    # nginx warns on every reload.
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
 
     location / {
-        proxy_pass http://{{.Target}};
+{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -217,6 +242,9 @@ func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (
 		KeyPath:     keyPath,
 		Webroot:     p.Webroot,
 		ProxyCommon: proxyCommon,
+	}
+	if p.SiteLimits {
+		d.Limits = siteLimits
 	}
 	var tmpl *template.Template
 	switch {
