@@ -25,6 +25,7 @@ import (
 	"text/template"
 
 	"github.com/pnuops/pickle-proxy-agent/internal/model"
+	"github.com/pnuops/pickle-proxy-agent/internal/sourcepolicy"
 )
 
 // CertPair is one certificate/key pair on disk.
@@ -94,16 +95,17 @@ const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
 `
 
 type vhostData struct {
-	FQDN        string
-	Generation  int64
-	Kind        string
-	Target      string
-	HTTPSListen string
-	CertPath    string
-	KeyPath     string
-	Webroot     string
-	ProxyCommon string
-	Limits      string
+	FQDN         string
+	Generation   int64
+	Kind         string
+	Target       string
+	HTTPSListen  string
+	CertPath     string
+	KeyPath      string
+	Webroot      string
+	ProxyCommon  string
+	Limits       string
+	SourcePolicy string
 }
 
 var platformTmpl = template.Must(template.New("platform").Parse(
@@ -128,7 +130,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-{{.Limits}}        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -166,7 +168,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-{{.Limits}}        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -182,7 +184,7 @@ server {
         root {{.Webroot}};
     }
     location / {
-        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -230,18 +232,23 @@ func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err err
 // can complete HTTP-01 before the HTTPS server (which would fail `nginx -t` on a
 // missing cert) is introduced. It is ignored for platform routes.
 func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (string, error) {
+	return renderWithSourcePolicy(r, p, certPath, keyPath, certReady, nil)
+}
+
+func renderWithSourcePolicy(r model.Route, p Params, certPath, keyPath string, certReady bool, policy *sourcepolicy.Policy) (string, error) {
 	if err := Validate(r); err != nil {
 		return "", err
 	}
 	d := vhostData{
-		FQDN:        r.FQDN,
-		Generation:  r.Generation,
-		Target:      net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
-		HTTPSListen: p.HTTPSListen,
-		CertPath:    certPath,
-		KeyPath:     keyPath,
-		Webroot:     p.Webroot,
-		ProxyCommon: proxyCommon,
+		FQDN:         r.FQDN,
+		Generation:   r.Generation,
+		Target:       net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
+		HTTPSListen:  p.HTTPSListen,
+		CertPath:     certPath,
+		KeyPath:      keyPath,
+		Webroot:      p.Webroot,
+		ProxyCommon:  proxyCommon,
+		SourcePolicy: sourcePolicyDirectives(policy),
 	}
 	if p.SiteLimits {
 		d.Limits = siteLimits
