@@ -9,7 +9,7 @@ import (
 )
 
 func TestSourcePolicyCoversEveryProxiedLocation(t *testing.T) {
-	policy, err := sourcepolicy.Parse([]string{"192.0.2.0/24", "2001:db8::/32"})
+	policy, err := sourcepolicy.FromCIDRs([]string{"192.0.2.0/24", "2001:db8::/32"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,8 @@ func TestSourcePolicyCoversEveryProxiedLocation(t *testing.T) {
 		{"custom HTTP fallback", customRoute(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := renderWithSourcePolicy(tc.route, testParams(), "/c.pem", "/k.pem", tc.ready, policy)
+			tc.route.SourcePolicy = policy
+			out, err := Render(tc.route, testParams(), "/c.pem", "/k.pem", tc.ready)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -39,11 +40,14 @@ func TestSourcePolicyCoversEveryProxiedLocation(t *testing.T) {
 					t.Fatalf("source policy trusts caller input: %s", forbidden)
 				}
 			}
+			if !strings.Contains(out, "proxy_set_header X-Forwarded-For $remote_addr;") || !strings.Contains(out, "proxy_set_header Forwarded \"\";") {
+				t.Fatal("policy route retains an untrusted forwarding chain")
+			}
 			if tc.ready && !strings.Contains(out, "real_ip_header proxy_protocol;") {
 				t.Fatal("TLS source policy does not restore the trusted PROXY address")
 			}
-			if !tc.ready && strings.Contains(out, "real_ip_header") {
-				t.Fatal("direct HTTP source policy must use its socket peer")
+			if !tc.ready && (!strings.Contains(out, "real_ip_header proxy_protocol;") || strings.Contains(out, "listen 80 proxy_protocol")) {
+				t.Fatal("direct HTTP policy must ignore inherited HTTP address headers and keep its plain socket")
 			}
 			if start := strings.Index(out, "location /.well-known/acme-challenge/"); start >= 0 {
 				challenge := out[start:]
@@ -64,11 +68,16 @@ func TestSourcePolicyDistinguishesLegacyFromExplicitDeny(t *testing.T) {
 	if strings.Contains(legacy, "deny all;") || strings.Contains(legacy, "allow ") {
 		t.Fatal("legacy route changed source access")
 	}
-	deny, err := sourcepolicy.Parse([]string{})
+	if !strings.Contains(legacy, "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;") || strings.Contains(legacy, "proxy_set_header Forwarded") {
+		t.Fatal("field-absent legacy header shape changed")
+	}
+	deny, err := sourcepolicy.FromCIDRs([]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied, err := renderWithSourcePolicy(customRoute(), testParams(), "/c.pem", "/k.pem", false, deny)
+	route := customRoute()
+	route.SourcePolicy = deny
+	denied, err := Render(route, testParams(), "/c.pem", "/k.pem", false)
 	if err != nil {
 		t.Fatal(err)
 	}

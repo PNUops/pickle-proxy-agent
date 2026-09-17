@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -57,7 +58,10 @@ type Config struct {
 
 	// HTTPSListen is the internal HTTPS listen address for terminated vhosts. The
 	// stream{} block owns :443 and forwards non-passthrough SNIs here.
-	HTTPSListen string
+	HTTPSListen           string
+	TargetNetwork         netip.Prefix
+	HTTPProxyListen       string
+	HTTPProxyTrustedPeers []netip.Addr
 
 	// SiteLimits renders the default per-site request and connection limits into
 	// every published vhost (PICKLE_PROXY_AGENT_SITE_LIMITS, default on). Off is
@@ -114,6 +118,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c.WildcardCerts = wildcards
+	c.TargetNetwork, err = render.ParseTargetNetwork(env("PICKLE_PROXY_AGENT_TARGET_CIDR", "172.29.0.0/16"))
+	if err != nil {
+		return Config{}, err
+	}
+	c.HTTPProxyListen, c.HTTPProxyTrustedPeers, err = parseHTTPProxy(
+		os.Getenv("PICKLE_PROXY_AGENT_HTTP_PROXY_LISTEN"), os.Getenv("PICKLE_PROXY_AGENT_HTTP_PROXY_TRUSTED_PEERS"))
+	if err != nil {
+		return Config{}, err
+	}
+	if c.HTTPProxyListen != "" && c.HTTPProxyListen == c.HTTPSListen {
+		return Config{}, fmt.Errorf("HTTP PROXY listener must differ from the HTTPS listener")
+	}
 	siteLimits, err := parseOnOff("PICKLE_PROXY_AGENT_SITE_LIMITS", true)
 	if err != nil {
 		return Config{}, err

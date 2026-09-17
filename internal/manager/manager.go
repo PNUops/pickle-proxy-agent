@@ -17,6 +17,8 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,6 +31,7 @@ import (
 	"github.com/pnuops/pickle-proxy-agent/internal/model"
 	"github.com/pnuops/pickle-proxy-agent/internal/nginx"
 	"github.com/pnuops/pickle-proxy-agent/internal/render"
+	"github.com/pnuops/pickle-proxy-agent/internal/sourcepolicy"
 	"github.com/pnuops/pickle-proxy-agent/internal/state"
 )
 
@@ -78,7 +81,7 @@ func (m *Manager) Apply(ctx context.Context, r model.Route) (int, model.ApplyRes
 	if applied, known := m.store.Generation(r.FQDN); known && r.Generation <= applied {
 		return 409, model.ApplyResult{Applied: false, Generation: applied}
 	}
-	if err := render.Validate(r); err != nil {
+	if err := render.ValidateWithNetwork(r, m.params.TargetNetwork); err != nil {
 		return 422, model.ApplyResult{Applied: false, Error: err.Error()}
 	}
 
@@ -87,14 +90,14 @@ func (m *Manager) Apply(ctx context.Context, r model.Route) (int, model.ApplyRes
 	if err != nil {
 		return 422, model.ApplyResult{Applied: false, Error: err.Error()}
 	}
-	restore := func() { restoreFile(path, backup, existed) }
+	restore := func() error { return restoreFile(path, backup, existed) }
 
 	if r.DesiredState == model.Absent {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return 422, model.ApplyResult{Applied: false, Error: err.Error()}
 		}
 		if out, err := m.testAndReload(ctx); err != nil {
-			restore()
+			out = m.restoreAfterFailure(ctx, restore, out, err)
 			m.recordApply(false, "remove "+r.FQDN, out)
 			return 422, model.ApplyResult{Applied: false, Error: out}
 		}
@@ -118,7 +121,7 @@ func (m *Manager) Apply(ctx context.Context, r model.Route) (int, model.ApplyRes
 		return 422, model.ApplyResult{Applied: false, Error: err.Error()}
 	}
 	if out, err := m.testAndReload(ctx); err != nil {
-		restore()
+		out = m.restoreAfterFailure(ctx, restore, out, err)
 		m.recordApply(false, r.FQDN, out)
 		return 422, model.ApplyResult{Applied: false, Error: out}
 	}
@@ -157,7 +160,7 @@ func (m *Manager) settleCert(ctx context.Context, r model.Route, path string, ce
 		return
 	}
 	if out, err := m.testAndReload(ctx); err != nil {
-		restoreFile(path, backup, existed) // keep the working challenge vhost live
+		out = m.restoreAfterFailure(ctx, func() error { return restoreFile(path, backup, existed) }, out, err)
 		_ = m.store.SetCert(r.FQDN, model.CertFailed, out)
 		return
 	}
@@ -216,7 +219,7 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 			// A snapshot lists what should exist; ABSENT entries are simply omitted.
 			continue
 		}
-		if err := render.Validate(r); err != nil {
+		if err := render.ValidateWithNetwork(r, m.params.TargetNetwork); err != nil {
 			return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: r.FQDN + ": " + err.Error()}
 		}
 		fn := render.FileName(r.FQDN)
@@ -271,11 +274,11 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 
 	// Swap: write the full desired set, remove everything else agent-managed.
 	if err := writeConfDir(m.dir, desired); err != nil {
-		restoreConfDir(m.dir, prior)
-		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: err.Error()}
+		out := m.restoreAfterFailure(ctx, func() error { return restoreConfDir(m.dir, prior) }, err.Error(), err)
+		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: out}
 	}
 	if out, err := m.testAndReload(ctx); err != nil {
-		restoreConfDir(m.dir, prior)
+		out = m.restoreAfterFailure(ctx, func() error { return restoreConfDir(m.dir, prior) }, out, err)
 		m.recordSync(false, "sync-all", out)
 		return 422, model.SyncAllResult{Applied: false, SnapshotGeneration: req.SnapshotGeneration, Error: out}
 	}
@@ -307,7 +310,25 @@ func (m *Manager) SyncAll(ctx context.Context, req model.SyncAllRequest) (int, m
 	return 200, model.SyncAllResult{Applied: true, SnapshotGeneration: req.SnapshotGeneration, Pruned: pruned, Results: results}
 }
 
-// testAndReload validates the on-disk config, then reloads only if valid.
+var errReloadUnconfirmed = errors.New("nginx reload was not confirmed")
+
+// restoreAfterFailure restores files and, after an ambiguous reload, proves the old
+// configuration again. Cancellation of the caller must not cancel recovery halfway.
+func (m *Manager) restoreAfterFailure(ctx context.Context, restore func() error, detail string, original error) string {
+	if err := restore(); err != nil {
+		return detail + "\nrollback files failed; running configuration is unconfirmed: " + err.Error()
+	}
+	if errors.Is(original, errReloadUnconfirmed) {
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer cancel()
+		if output, err := m.testAndReload(recovery); err != nil {
+			return detail + "\nrollback reload unconfirmed: " + output
+		}
+	}
+	return detail
+}
+
+// testAndReload validates the on-disk config, then verifies the reloaded configuration.
 func (m *Manager) testAndReload(ctx context.Context) (string, error) {
 	// A failure here rolls the file back and answers 422, but the caller only ever
 	// sees the message over HTTP. Log it too: when the platform API is the thing
@@ -321,7 +342,7 @@ func (m *Manager) testAndReload(ctx context.Context) (string, error) {
 	if err := m.nginx.Reload(ctx); err != nil {
 		msg := strings.TrimSpace(out + "\nreload: " + err.Error())
 		log.Printf("nginx reload failed: %s", msg)
-		return msg, err
+		return msg, fmt.Errorf("%w: %w", errReloadUnconfirmed, err)
 	}
 	return out, nil
 }
@@ -345,13 +366,14 @@ func (m *Manager) Status() model.StatusResponse {
 	sort.Slice(routes, func(i, j int) bool { return routes[i].FQDN < routes[j].FQDN })
 	sort.Slice(certs, func(i, j int) bool { return certs[i].FQDN < certs[j].FQDN })
 	return model.StatusResponse{
-		Health:    "ok",
-		StartedAt: started,
-		Now:       m.now(),
-		LastApply: la,
-		LastSync:  ls,
-		Routes:    routes,
-		Certs:     certs,
+		Health:       "ok",
+		Capabilities: []string{sourcepolicy.Capability},
+		StartedAt:    started,
+		Now:          m.now(),
+		LastApply:    la,
+		LastSync:     ls,
+		Routes:       routes,
+		Certs:        certs,
 	}
 }
 
