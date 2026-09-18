@@ -11,6 +11,7 @@ package nginx
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -29,6 +30,13 @@ type Nginx interface {
 type Exec struct {
 	Bin     string
 	Timeout time.Duration
+	// PrefixArgs selects an isolated nginx config in tests; production uses its normal config.
+	PrefixArgs    []string
+	ProofTimeout  time.Duration
+	proofDir      string
+	proofSocket   string
+	proofURI      string
+	proofExpected string
 }
 
 // New returns an Exec bound to the given binary.
@@ -42,18 +50,33 @@ func New(bin string, timeout time.Duration) *Exec {
 func (e *Exec) run(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.Bin, args...)
+	cmd := exec.CommandContext(ctx, e.Bin, append(append([]string{}, e.PrefixArgs...), args...)...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
 // Test runs `nginx -t`.
 func (e *Exec) Test(ctx context.Context) (string, error) {
-	return e.run(ctx, "-t")
+	if e.proofDir != "" {
+		if err := e.prepareProof(); err != nil {
+			return err.Error(), err
+		}
+	}
+	out, err := e.run(ctx, "-t")
+	if err != nil {
+		e.proofExpected = ""
+	}
+	return out, err
 }
 
 // Reload runs `nginx -s reload`.
 func (e *Exec) Reload(ctx context.Context) error {
+	if e.proofDir != "" && e.proofExpected == "" {
+		return fmt.Errorf("nginx reload requires a successful candidate configuration test")
+	}
 	_, err := e.run(ctx, "-s", "reload")
-	return err
+	if err != nil || e.proofDir == "" {
+		return err
+	}
+	return e.waitForProof(ctx)
 }

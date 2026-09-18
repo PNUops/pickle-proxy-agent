@@ -3,6 +3,8 @@ package manager
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/pnuops/pickle-proxy-agent/internal/nginx"
 )
 
 // filePerm is the mode for rendered vhost files (root-owned, group-readable by nginx).
@@ -33,12 +35,19 @@ func writeFile(path, content string) error {
 
 // restoreFile puts a file back to its pre-mutation state: rewrite the backed-up
 // content if it existed, otherwise remove whatever we wrote.
-func restoreFile(path string, backup []byte, existed bool) {
+func restoreFile(path string, backup []byte, existed bool) error {
 	if existed {
-		_ = writeFile(path, string(backup))
-		return
+		return writeFile(path, string(backup))
 	}
-	_ = os.Remove(path)
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func isRouteConfig(entry os.DirEntry) bool {
+	return !entry.IsDir() && filepath.Ext(entry.Name()) == ".conf" && entry.Name() != nginx.ReloadProofConfig
 }
 
 // readConfDir reads all agent-managed *.conf files in dir into filename->content.
@@ -49,7 +58,7 @@ func readConfDir(dir string) (map[string][]byte, error) {
 	}
 	out := map[string][]byte{}
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".conf" {
+		if !isRouteConfig(e) {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -74,7 +83,7 @@ func writeConfDir(dir string, desired map[string]string) error {
 		return err
 	}
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".conf" {
+		if !isRouteConfig(e) {
 			continue
 		}
 		if _, keep := desired[e.Name()]; !keep {
@@ -89,16 +98,10 @@ func writeConfDir(dir string, desired map[string]string) error {
 // restoreConfDir returns the agent-managed set to exactly `prior`: remove every
 // current *.conf, then rewrite the backup. Called after a failed swap so the live
 // tree is left untouched.
-func restoreConfDir(dir string, prior map[string][]byte) {
-	if entries, err := os.ReadDir(dir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".conf" {
-				continue
-			}
-			_ = os.Remove(filepath.Join(dir, e.Name()))
-		}
-	}
+func restoreConfDir(dir string, prior map[string][]byte) error {
+	desired := make(map[string]string, len(prior))
 	for name, content := range prior {
-		_ = writeFile(filepath.Join(dir, name), string(content))
+		desired[name] = string(content)
 	}
+	return writeConfDir(dir, desired)
 }

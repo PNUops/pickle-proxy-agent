@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"text/template"
 
 	"github.com/pnuops/pickle-proxy-agent/internal/model"
+	"github.com/pnuops/pickle-proxy-agent/internal/sourcepolicy"
 )
 
 // CertPair is one certificate/key pair on disk.
@@ -36,6 +38,11 @@ type CertPair struct {
 // Params carries the deploy-time settings render needs that are not part of a Route.
 type Params struct {
 	HTTPSListen string // 127.0.0.1:8443
+	// TargetNetwork is the only permitted guest target network; zero keeps the legacy default.
+	TargetNetwork netip.Prefix
+	// HTTPProxyListen accepts PROXY protocol separately from the ordinary HTTP socket.
+	HTTPProxyListen       string
+	HTTPProxyTrustedPeers []netip.Addr
 	// LECertRef is the one certRef that means "per-domain Let's Encrypt". It is
 	// matched exactly rather than treated as a catch-all: a ref this agent does
 	// not recognise is far more likely to come from a pickle-api on the other
@@ -94,16 +101,20 @@ const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
 `
 
 type vhostData struct {
-	FQDN        string
-	Generation  int64
-	Kind        string
-	Target      string
-	HTTPSListen string
-	CertPath    string
-	KeyPath     string
-	Webroot     string
-	ProxyCommon string
-	Limits      string
+	FQDN                  string
+	Generation            int64
+	Kind                  string
+	Target                string
+	HTTPSListen           string
+	CertPath              string
+	KeyPath               string
+	Webroot               string
+	ProxyCommon           string
+	Limits                string
+	SourcePolicy          string
+	HTTPProxyListen       string
+	HTTPProxyTrustedPeers []netip.Addr
+	HasSourcePolicy       bool
 }
 
 var platformTmpl = template.Must(template.New("platform").Parse(
@@ -128,7 +139,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-{{.Limits}}        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -138,7 +149,12 @@ var customHTTPSTmpl = template.Must(template.New("customHTTPS").Parse(
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}}
 server {
     listen 80;
-    server_name {{.FQDN}};
+{{if .HTTPProxyListen}}    listen {{.HTTPProxyListen}} proxy_protocol;
+{{range .HTTPProxyTrustedPeers}}    set_real_ip_from {{.}};
+{{end}}    real_ip_header proxy_protocol;
+{{else if .HasSourcePolicy}}    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+{{end}}    server_name {{.FQDN}};
 
     location /.well-known/acme-challenge/ {
         root {{.Webroot}};
@@ -166,7 +182,7 @@ server {
     real_ip_header proxy_protocol;
 
     location / {
-{{.Limits}}        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}{{.Limits}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -176,13 +192,18 @@ var customChallengeTmpl = template.Must(template.New("customChallenge").Parse(
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}} (cert pending)
 server {
     listen 80;
-    server_name {{.FQDN}};
+{{if .HTTPProxyListen}}    listen {{.HTTPProxyListen}} proxy_protocol;
+{{range .HTTPProxyTrustedPeers}}    set_real_ip_from {{.}};
+{{end}}    real_ip_header proxy_protocol;
+{{else if .HasSourcePolicy}}    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+{{end}}    server_name {{.FQDN}};
 
     location /.well-known/acme-challenge/ {
         root {{.Webroot}};
     }
     location / {
-        proxy_pass http://{{.Target}};
+{{.SourcePolicy}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -230,18 +251,32 @@ func CertPaths(r model.Route, p Params, leDir string) (cert, key string, err err
 // can complete HTTP-01 before the HTTPS server (which would fail `nginx -t` on a
 // missing cert) is introduced. It is ignored for platform routes.
 func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (string, error) {
-	if err := Validate(r); err != nil {
+	return renderWithSourcePolicy(r, p, certPath, keyPath, certReady, r.SourcePolicy.Value())
+}
+
+func renderWithSourcePolicy(r model.Route, p Params, certPath, keyPath string, certReady bool, policy *sourcepolicy.Policy) (string, error) {
+	if err := ValidateWithNetwork(r, p.TargetNetwork); err != nil {
 		return "", err
 	}
 	d := vhostData{
-		FQDN:        r.FQDN,
-		Generation:  r.Generation,
-		Target:      net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
-		HTTPSListen: p.HTTPSListen,
-		CertPath:    certPath,
-		KeyPath:     keyPath,
-		Webroot:     p.Webroot,
-		ProxyCommon: proxyCommon,
+		FQDN:                  r.FQDN,
+		Generation:            r.Generation,
+		Target:                net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
+		HTTPSListen:           p.HTTPSListen,
+		CertPath:              certPath,
+		KeyPath:               keyPath,
+		Webroot:               p.Webroot,
+		ProxyCommon:           proxyCommon,
+		SourcePolicy:          sourcePolicyDirectives(policy),
+		HTTPProxyListen:       p.HTTPProxyListen,
+		HTTPProxyTrustedPeers: p.HTTPProxyTrustedPeers,
+		HasSourcePolicy:       policy != nil,
+	}
+	if policy != nil || p.HTTPProxyListen != "" {
+		// A policy-aware backend receives only the verified peer, not a caller's
+		// forwarding chain. Preserve the legacy header shape when neither is enabled.
+		d.ProxyCommon = strings.Replace(proxyCommon, "$proxy_add_x_forwarded_for", "$remote_addr", 1) +
+			"        proxy_set_header Forwarded \"\";\n"
 	}
 	if p.SiteLimits {
 		d.Limits = siteLimits
@@ -271,13 +306,7 @@ func Render(r model.Route, p Params, certPath, keyPath string, certReady bool) (
 // address is refused before it is ever written to disk, so a compromised caller
 // (or a stolen agent token) cannot turn the reverse proxy into a probe of the
 // internal networks. Defence in depth: the API validates the target too.
-var targetNet = func() *net.IPNet {
-	_, n, err := net.ParseCIDR("172.29.0.0/16")
-	if err != nil {
-		panic(err)
-	}
-	return n
-}()
+var targetNet = netip.MustParsePrefix("172.29.0.0/16")
 
 // Validate checks a route has a sane target: a well-formed FQDN, a port in range,
 // and an IP inside the user-VM network. The API is the first line of defence for
@@ -291,6 +320,14 @@ var targetNet = func() *net.IPNet {
 // checks skipped entirely. Unknown states are refused outright so the two layers
 // cannot drift apart again.
 func Validate(r model.Route) error {
+	return ValidateWithNetwork(r, targetNet)
+}
+
+// ValidateWithNetwork checks a route against the configured guest target network.
+func ValidateWithNetwork(r model.Route, network netip.Prefix) error {
+	if !network.IsValid() {
+		network = targetNet
+	}
 	if strings.TrimSpace(r.FQDN) == "" {
 		return fmt.Errorf("fqdn is empty")
 	}
@@ -304,12 +341,12 @@ func Validate(r model.Route) error {
 	default:
 		return fmt.Errorf("desiredState %q is not recognised", r.DesiredState)
 	}
-	ip := net.ParseIP(r.TargetIP)
-	if ip == nil {
+	ip, err := netip.ParseAddr(r.TargetIP)
+	if err != nil {
 		return fmt.Errorf("targetIp %q is not a valid IP", r.TargetIP)
 	}
-	if !targetNet.Contains(ip) {
-		return fmt.Errorf("targetIp %q is outside the user VM network %s", r.TargetIP, targetNet)
+	if !network.Contains(ip.Unmap()) {
+		return fmt.Errorf("targetIp %q is outside the user VM network %s", r.TargetIP, network)
 	}
 	if r.TargetPort < 1 || r.TargetPort > 65535 {
 		return fmt.Errorf("targetPort %d out of range", r.TargetPort)

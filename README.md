@@ -7,8 +7,11 @@
 표준 라이브러리만 사용하는 단일 정적 Go 바이너리입니다.
 
 라우팅 정보의 원본은 API 서버의 데이터베이스이고, nginx 설정은 거기서 파생된 산출물입니다.
-에이전트는 자기가 소유한 vhost 파일(FQDN당 한 개)만 다루고 nginx 트리의 다른 부분은
-건드리지 않습니다.
+에이전트는 소유 include 디렉터리에서 도메인별 vhost와 구성 확인 파일을 관리합니다.
+nginx 트리의 다른 부분은 건드리지 않습니다.
+
+소유 include 디렉터리의 `_pickle_reload_proof.conf`와 `_pickle_reload_proof.sock`은 새
+nginx 구성 확인용으로 예약합니다. 도메인 목록의 정리 대상에 포함하지 않습니다.
 
 ## 전체 구조
 
@@ -43,7 +46,7 @@
 모든 변경은 단일 직렬 큐를 지나 한 번에 하나씩 처리됩니다.
 
 ```
-요청 수신 → vhost 렌더 → nginx -t 검증 → 원자적 파일 교체 → reload → 결과 보고
+요청 수신 → vhost 렌더 → nginx -t 검증 → reload → 새 구성 응답 확인 → 결과 보고
                               │ 어느 단계든 실패하면
                               ▼
                      직전 파일 상태로 롤백 (이미 반영된 설정은 그대로)
@@ -54,6 +57,12 @@ no-op(`409`)입니다. 네트워크 재시도가 몇 번을 오든 결과가 같
 
 세대와 인증서 상태는 임시 파일에 쓴 뒤 원자 교체로 영속화합니다. 적용 도중 프로세스가
 죽어도 상태 파일이 반쯤 쓰인 채 남지 않습니다.
+
+reload 신호의 종료 코드만으로 적용을 확정하지 않습니다. 후보 vhost 집합의 해시와 매번
+바뀌는 난수를 Unix socket의 응답에 포함하고, 새 연결에서 그 응답을 확인한 뒤 세대를
+기록합니다. 10초 안에 확인되지 않으면 이전 파일을 복원하고 복원 구성도 다시 확인합니다.
+복원이 확인되지 않은 오류도 별도로 보고합니다. 실패한 세대는 그대로 재시도할 수 있습니다.
+이 확인 경로는 TCP listener와 공개 응답 헤더를 만들지 않습니다.
 
 인증서는 두 갈래입니다. 플랫폼 서브도메인은 자기 루트 도메인의 와일드카드 인증서를
 사용합니다(`certRef`가 `wildcard:<루트>` 형태로 루트를 지목합니다. 설정에 없는 루트는
@@ -83,6 +92,22 @@ vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적
 - `POST /sync-all` — 전체 스냅샷으로 세트를 재렌더하고, 매니페스트에 없는 vhost는 정리합니다
 - `GET /status` — 헬스, FQDN별 적용 세대, 커스텀 도메인 인증서 상태
 
+각 `/apply` 요청과 `/sync-all.routes[]` 항목은 선택적으로 다음 필드를 받습니다.
+
+```json
+{ "sourcePolicy": { "allowedCidrs": ["192.0.2.0/24", "2001:db8::/32"] } }
+```
+
+필드 생략은 기존 접근 동작을 유지합니다. `{"allowedCidrs":[]}`는 해당 도메인의 backend
+접근을 모두 거부하며 전체 공개는 `0.0.0.0/0`과 `::/0`을 명시합니다. `null`, 목록 누락,
+중복 CIDR과 호스트 비트가 남은 CIDR은 거부합니다. canonical IPv4/IPv6 네트워크 CIDR을
+최대 128개 받으며, bare IP와 DNS 이름은 받지 않습니다. 교내 프리셋은 호출자가 실제 CIDR로
+확장해 전달합니다. 정책을 바꾸면 기존과 같이 `generation`을 올립니다.
+
+`GET /status`의 `capabilities`는 `source-acl-v1`을 포함합니다. 호출자는 해당 capability를
+확인한 에이전트에만 정책을 전송해야 합니다. 지원 광고와 적용 세대는 설정 확인이며,
+실제 외부 허용·거부 경로의 검증을 대신하지 않습니다.
+
 ## 보안 경계
 
 공유 bearer 토큰과 소스 IP 허용 목록을 둘 다 통과해야 합니다. 토큰이 비어 있으면 부팅을
@@ -92,6 +117,24 @@ vhost로 바꾸는 2단계 렌더를 사용합니다. 발급이 실패해도 적
 방문자의 주소는 TLS 종단 계층이 앞에 붙여 준 PROXY 헤더에서 복원해 VM 쪽으로
 `X-Real-IP`로 전달합니다. 요청 헤더에 실려 온 주소는 읽지 않습니다. 읽는다면 이 호스트에
 닿을 수 있는 누구든 기록에 남을 주소를 스스로 정할 수 있게 됩니다.
+
+정책은 복원한 주소 또는 직접 HTTP 연결의 peer 주소에 적용합니다. HTTP 인증서 발급 중의
+backend에도 같은 정책을 적용합니다. ACME challenge와 backend에 닿지 않는 HTTPS redirect는
+응답할 수 있습니다. 정책을 쓰는 도메인과 전용 HTTP PROXY 수신 경로에서는 `X-Real-IP`와
+`X-Forwarded-For`를 검증한 주소 하나로 덮고 `Forwarded`는 제거합니다. 정책과 전용 수신
+설정을 모두 생략하면 기존 헤더 출력도 유지합니다.
+
+HTTP 중계가 필요하면 일반 `:80`과 구분한 PROXY 수신 주소와 신뢰할 peer IP를 함께
+설정합니다. peer는 IP 리터럴만 받으며 XFF를 신뢰 경로로 사용하지 않습니다. 호스트 방화벽도
+전용 listener를 지정한 중계 peer에만 개방해야 합니다. 정책 변경은 전체 설정의 `nginx -t`
+통과 후 graceful reload로 반영합니다. 진행 중인 응답을 강제로 종료하는 명령은 사용하지
+않습니다. [주소 복원](https://nginx.org/en/docs/http/ngx_http_realip_module.html),
+[reload 동작](https://nginx.org/en/docs/control.html)을 기준으로 배치합니다.
+
+구성 확인 socket의 로컬 접근은 include 디렉터리 권한을 따릅니다. 이 디렉터리는 에이전트
+소유여야 하고 group/other 쓰기를 허용하면 시작을 거부합니다. 운영 환경에서는 root 소유로
+보호하고 nginx master가 해당 디렉터리에서 Unix socket을 만들 수 있어야 합니다.
+예약 파일·socket은 nginx가 사용하는 동안 임의로 지우지 않습니다.
 
 공개된 사이트의 vhost에는 요청 빈도와 동시 연결 상한이 함께 들어갑니다. 상한은 방문자
 주소 단위로 걸리고, 인증서 발급 중에 잠깐 올라가는 챌린지 전용 vhost는 대상이 아닙니다.
@@ -103,6 +146,12 @@ scripts/verify.sh        # shellcheck → gofmt → go vet → build → test
 ```
 
 Go 1.26이 필요합니다. `gofmt -l`이 하드 게이트라 코드는 항상 gofmt 정렬 상태입니다.
+
+격리된 nginx 테스트 환경에서는 `PICKLE_TEST_NGINX_BIN`을 해당 바이너리 경로로 지정해
+`go test ./internal/render -run TestSourcePolicyNginx`를 실행할 수 있습니다. 실제 HTTP/TLS
+허용·거부, backend의 전달 헤더와 reload 중 활성 응답 보존을 확인합니다.
+격리 환경에 비어 있는 `:80`이 있으면 `go test ./internal/manager -run TestReloadProof`로
+점유된 신규 포트의 적용 거부, 기존 구성 복원과 같은 세대 재시도를 확인할 수 있습니다.
 
 ## 레이아웃
 
@@ -140,6 +189,9 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_STATE_FILE` | 세대·인증서 상태 JSON | `/var/lib/pickle-proxy-agent/state.json` |
 | `PICKLE_PROXY_AGENT_NGINX_BIN` | nginx 바이너리 | `nginx` |
 | `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단 vhost의 내부 HTTPS 리슨. `stream{}`이 :443을 소유합니다 | `127.0.0.1:8443` |
+| `PICKLE_PROXY_AGENT_TARGET_CIDR` | proxy 대상의 canonical IPv4 네트워크 CIDR | `172.29.0.0/16` |
+| `PICKLE_PROXY_AGENT_HTTP_PROXY_LISTEN` | 전용 HTTP PROXY 수신 IP:port. 일반 :80 및 HTTPS 수신 주소와 구분합니다 | 빈 값 |
+| `PICKLE_PROXY_AGENT_HTTP_PROXY_TRUSTED_PEERS` | 전용 수신 주소에서 신뢰하는 peer IP 리터럴. 쉼표로 구분하며 listener와 함께 설정합니다 | 빈 값 |
 | `PICKLE_PROXY_AGENT_CERTBOT_BIN` | certbot 바이너리 | `certbot` |
 | `PICKLE_PROXY_AGENT_WEBROOT` | HTTP-01 챌린지 webroot | `/var/www/certbot` |
 | `PICKLE_PROXY_AGENT_LE_DIR` | Let's Encrypt live 디렉터리. 갱신 설정 디렉터리는 certbot 배치 그대로 그 형제인 `renewal/`로 봅니다 | `/etc/letsencrypt/live` |

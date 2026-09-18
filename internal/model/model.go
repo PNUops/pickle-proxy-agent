@@ -6,6 +6,8 @@ package model
 import (
 	"strings"
 	"time"
+
+	"github.com/pnuops/pickle-proxy-agent/internal/sourcepolicy"
 )
 
 // DesiredState is the presence of a vhost for one FQDN.
@@ -43,12 +45,13 @@ func WildcardRoot(certRef string) (string, bool) {
 // Route is the full desired state for one FQDN. It is the POST /apply body and
 // also each entry in a /sync-all manifest.
 type Route struct {
-	FQDN         string       `json:"fqdn"`
-	DesiredState DesiredState `json:"desiredState"`
-	Generation   int64        `json:"generation"`
-	TargetIP     string       `json:"targetIp,omitempty"`
-	TargetPort   int          `json:"targetPort,omitempty"`
-	CertRef      string       `json:"certRef,omitempty"`
+	FQDN         string                `json:"fqdn"`
+	DesiredState DesiredState          `json:"desiredState"`
+	Generation   int64                 `json:"generation"`
+	TargetIP     string                `json:"targetIp,omitempty"`
+	TargetPort   int                   `json:"targetPort,omitempty"`
+	CertRef      string                `json:"certRef,omitempty"`
+	SourcePolicy sourcepolicy.Optional `json:"sourcePolicy,omitzero"`
 }
 
 // ApplyResult is the POST /apply response body. On 200 Applied is true and
@@ -119,13 +122,14 @@ type Event struct {
 
 // StatusResponse is the GET /status body.
 type StatusResponse struct {
-	Health    string        `json:"health"`
-	StartedAt time.Time     `json:"startedAt"`
-	Now       time.Time     `json:"now"`
-	LastApply *Event        `json:"lastApply,omitempty"`
-	LastSync  *Event        `json:"lastSync,omitempty"`
-	Routes    []RouteStatus `json:"routes"`
-	Certs     []CertStatus  `json:"certs"`
+	Capabilities []string      `json:"capabilities,omitempty"`
+	Health       string        `json:"health"`
+	StartedAt    time.Time     `json:"startedAt"`
+	Now          time.Time     `json:"now"`
+	LastApply    *Event        `json:"lastApply,omitempty"`
+	LastSync     *Event        `json:"lastSync,omitempty"`
+	Routes       []RouteStatus `json:"routes"`
+	Certs        []CertStatus  `json:"certs"`
 }
 
 // Problem is the problem+json body used for chain-level rejections (auth/source/

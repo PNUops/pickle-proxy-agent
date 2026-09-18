@@ -38,13 +38,19 @@ func main() {
 	}
 
 	params := render.Params{
-		HTTPSListen:   cfg.HTTPSListen,
-		LECertRef:     cfg.LECertRef,
-		WildcardCerts: cfg.WildcardCerts,
-		Webroot:       cfg.Webroot,
-		SiteLimits:    cfg.SiteLimits,
+		HTTPSListen:           cfg.HTTPSListen,
+		TargetNetwork:         cfg.TargetNetwork,
+		HTTPProxyListen:       cfg.HTTPProxyListen,
+		HTTPProxyTrustedPeers: cfg.HTTPProxyTrustedPeers,
+		LECertRef:             cfg.LECertRef,
+		WildcardCerts:         cfg.WildcardCerts,
+		Webroot:               cfg.Webroot,
+		SiteLimits:            cfg.SiteLimits,
 	}
-	ng := nginx.New(cfg.NginxBin, cfg.ExecTimeout)
+	ng, err := nginx.NewVerified(cfg.NginxBin, cfg.ExecTimeout, cfg.NginxDir)
+	if err != nil {
+		log.Fatalf("nginx proof configuration: %v", err)
+	}
 	cb := certbot.New(cfg.CertbotBin, cfg.Webroot, cfg.LEDir, cfg.CertbotEmail, cfg.ExecTimeout)
 	mgr := manager.New(cfg.NginxDir, params, cfg.LEDir, ng, cb, st)
 
