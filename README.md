@@ -189,6 +189,9 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_STATE_FILE` | 세대·인증서 상태 JSON | `/var/lib/pickle-proxy-agent/state.json` |
 | `PICKLE_PROXY_AGENT_NGINX_BIN` | nginx 바이너리 | `nginx` |
 | `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단 vhost의 내부 HTTPS 리슨. `stream{}`이 :443을 소유합니다 | `127.0.0.1:8443` |
+| `PICKLE_PROXY_AGENT_HTTP_METADATA_LISTEN` | 원격 진입부의 Host 확인과 HTTP-01에 사용하는 별도 plain HTTP 주소. 명시적인 IP와 비특권 포트만 허용합니다 | 빈 값 (미사용) |
+| `PICKLE_PROXY_AGENT_HTTP_METADATA_TRUSTED_PEERS` | metadata 리슨에 접근하는 TCP peer의 단일 IP 목록. 리슨 주소와 함께 지정합니다 | 빈 값 |
+| `PICKLE_PROXY_AGENT_INGRESS_MARKER` | 사이트 백엔드를 활성화하는 marker 파일의 절대 경로. 지정한 파일이 없으면 503을 반환합니다 | 빈 값 (미사용) |
 | `PICKLE_PROXY_AGENT_TARGET_CIDR` | proxy 대상의 canonical IPv4 네트워크 CIDR | `172.29.0.0/16` |
 | `PICKLE_PROXY_AGENT_HTTP_PROXY_LISTEN` | 전용 HTTP PROXY 수신 IP:port. 일반 :80 및 HTTPS 수신 주소와 구분합니다 | 빈 값 |
 | `PICKLE_PROXY_AGENT_HTTP_PROXY_TRUSTED_PEERS` | 전용 수신 주소에서 신뢰하는 peer IP 리터럴. 쉼표로 구분하며 listener와 함께 설정합니다 | 빈 값 |
@@ -208,6 +211,25 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
   거부합니다. 이때 실패는 `syntax is ok` 뒤에 `zero size shared memory zone`으로 나오므로
   성공 여부는 문구가 아니라 종료 코드로 판정합니다.
 - certbot 갱신 타이머의 deploy-hook: 갱신 성공 후 `systemctl reload nginx`를 실행합니다.
+
+Metadata 리슨을 사용하면 관리 중인 FQDN마다 인증서 발급 전부터
+`HEAD /__pickle_vm_host`가 204를 반환합니다. 같은 리슨은 GET/HEAD HTTP-01
+token만 webroot에서 제공하며 VM 백엔드로 요청을 전달하지 않습니다. Query와
+다른 경로는 404, 허용하지 않은 메서드는 405입니다. `X-Forwarded-For` 값은
+접근 권한에 사용하지 않으며 실제 TCP peer만 확인합니다. 이 확인 경로는 VM의
+사용자 IP 정책과 별개이고, 실제 HTTPS 요청에는 기존 IP 정책과 rate limit을
+적용합니다. HTTPS vhost는 해당 FQDN과 일치하는 SNI 및 raw Host만 받습니다.
+
+동일 metadata 주소에는 별도의 default vhost가 있어야 하며 알려지지 않은 Host에
+404를 반환해야 합니다. HTTPS 주소의 default vhost는 알려지지 않은 SNI의
+handshake를 거부해야 합니다. 진입부가 공개 HTTP를 HTTPS로 리다이렉트할 때는
+고정 metadata URI와 Host만 조회하고, 사용자 URI·query·자격증명·body를 이
+plain HTTP 연결로 전달하지 않습니다.
+
+Ingress marker를 지정하면 HTTPS와 인증서 발급 중의 HTTP 백엔드 접근을 같은
+파일로 제어합니다. Host metadata와 HTTP-01 token은 marker가 없어도 사용할 수
+있습니다. Marker의 상위 디렉터리는 관리자만 쓸 수 있어야 하며, 파일은 별도의
+관리 절차에서 생성하거나 제거합니다.
 
 환경 파일이 없으면 배포 도구가 대상 호스트에서 토큰을 새로 만들어 쓰므로, 최초
 설치라면 그 토큰 값을 API 쪽 환경으로 복사해야 합니다.

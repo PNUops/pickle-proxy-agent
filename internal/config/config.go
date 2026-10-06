@@ -62,6 +62,11 @@ type Config struct {
 	TargetNetwork         netip.Prefix
 	HTTPProxyListen       string
 	HTTPProxyTrustedPeers []netip.Addr
+	// HTTPMetadataListen serves peer-only Host presence and ACME token reads.
+	HTTPMetadataListen       string
+	HTTPMetadataTrustedPeers []netip.Addr
+	// IngressMarker gates site backends while metadata and ACME remain available.
+	IngressMarker string
 
 	// SiteLimits renders the default per-site request and connection limits into
 	// every published vhost (PICKLE_PROXY_AGENT_SITE_LIMITS, default on). Off is
@@ -129,6 +134,18 @@ func Load() (Config, error) {
 	}
 	if c.HTTPProxyListen != "" && c.HTTPProxyListen == c.HTTPSListen {
 		return Config{}, fmt.Errorf("HTTP PROXY listener must differ from the HTTPS listener")
+	}
+	c.HTTPMetadataListen, c.HTTPMetadataTrustedPeers, err = parseHTTPMetadata(
+		os.Getenv("PICKLE_PROXY_AGENT_HTTP_METADATA_LISTEN"), os.Getenv("PICKLE_PROXY_AGENT_HTTP_METADATA_TRUSTED_PEERS"))
+	if err != nil {
+		return Config{}, err
+	}
+	if c.HTTPMetadataListen != "" && (c.HTTPMetadataListen == c.Listen || c.HTTPMetadataListen == c.HTTPSListen || c.HTTPMetadataListen == c.HTTPProxyListen) {
+		return Config{}, fmt.Errorf("HTTP metadata listener must differ from control, HTTPS and HTTP PROXY listeners")
+	}
+	c.IngressMarker = os.Getenv("PICKLE_PROXY_AGENT_INGRESS_MARKER")
+	if err := render.ValidateIngressMarker(c.IngressMarker); err != nil {
+		return Config{}, err
 	}
 	siteLimits, err := parseOnOff("PICKLE_PROXY_AGENT_SITE_LIMITS", true)
 	if err != nil {

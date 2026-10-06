@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -43,6 +45,11 @@ type Params struct {
 	// HTTPProxyListen accepts PROXY protocol separately from the ordinary HTTP socket.
 	HTTPProxyListen       string
 	HTTPProxyTrustedPeers []netip.Addr
+	// HTTPMetadataListen is a plain peer-only Host/ACME listener, separate from PROXY traffic.
+	HTTPMetadataListen       string
+	HTTPMetadataTrustedPeers []netip.Addr
+	// IngressMarker is optional; an absent configured file closes site backends.
+	IngressMarker string
 	// LECertRef is the one certRef that means "per-domain Let's Encrypt". It is
 	// matched exactly rather than treated as a catch-all: a ref this agent does
 	// not recognise is far more likely to come from a pickle-api on the other
@@ -102,6 +109,7 @@ const siteLimits = `        limit_req zone=pickle_site burst=60 nodelay;
 
 type vhostData struct {
 	FQDN                  string
+	FQDNPattern           string
 	Generation            int64
 	Kind                  string
 	Target                string
@@ -115,15 +123,50 @@ type vhostData struct {
 	HTTPProxyListen       string
 	HTTPProxyTrustedPeers []netip.Addr
 	HasSourcePolicy       bool
+	HTTPMetadataListen    string
+	MetadataPeerPattern   string
+	IngressMarker         string
 }
+
+// metadataTmpl never proxies to a VM. Host presence is available before certbot
+// completes; the site's actual HTTPS source policy stays on the separate vhost.
+const metadataTmpl = `{{if .HTTPMetadataListen}}
+server {
+    listen {{.HTTPMetadataListen}};
+    server_name {{.FQDN}};
+
+    if ($realip_remote_addr !~ "^({{.MetadataPeerPattern}})$") { return 403; }
+    if ($http_host !~* "^{{.FQDNPattern}}(:80)?$") { return 421; }
+    if ($args != "") { return 404; }
+
+    location = /__pickle_vm_host {
+        if ($request_method != HEAD) { return 405; }
+        return 204;
+    }
+    location ^~ /.well-known/acme-challenge/ {
+        if ($request_method !~ "^(GET|HEAD)$") { return 405; }
+        if ($request_uri !~ "^/\.well-known/acme-challenge/[A-Za-z0-9_-]{1,128}$") { return 404; }
+        root {{.Webroot}};
+        default_type text/plain;
+        try_files $uri =404;
+    }
+    location / { return 404; }
+}
+{{end}}`
 
 var platformTmpl = template.Must(template.New("platform").Parse(
 	`# Managed by pickle-proxy-agent — do not edit by hand.
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}}
+` + metadataTmpl + `
 server {
     listen {{.HTTPSListen}} ssl proxy_protocol;
     http2 on;
     server_name {{.FQDN}};
+
+    if ($ssl_server_name !~* "^{{.FQDNPattern}}$") { return 421; }
+    if ($http_host !~* "^{{.FQDNPattern}}(:443)?$") { return 421; }
+{{if .IngressMarker}}    if (!-f {{.IngressMarker}}) { return 503; }
+{{end}}
 
     ssl_certificate     {{.CertPath}};
     ssl_certificate_key {{.KeyPath}};
@@ -147,6 +190,7 @@ server {
 var customHTTPSTmpl = template.Must(template.New("customHTTPS").Parse(
 	`# Managed by pickle-proxy-agent — do not edit by hand.
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}}
+` + metadataTmpl + `
 server {
     listen 80;
 {{if .HTTPProxyListen}}    listen {{.HTTPProxyListen}} proxy_protocol;
@@ -167,6 +211,11 @@ server {
     listen {{.HTTPSListen}} ssl proxy_protocol;
     http2 on;
     server_name {{.FQDN}};
+
+    if ($ssl_server_name !~* "^{{.FQDNPattern}}$") { return 421; }
+    if ($http_host !~* "^{{.FQDNPattern}}(:443)?$") { return 421; }
+{{if .IngressMarker}}    if (!-f {{.IngressMarker}}) { return 503; }
+{{end}}
 
     ssl_certificate     {{.CertPath}};
     ssl_certificate_key {{.KeyPath}};
@@ -190,6 +239,7 @@ server {
 var customChallengeTmpl = template.Must(template.New("customChallenge").Parse(
 	`# Managed by pickle-proxy-agent — do not edit by hand.
 # fqdn={{.FQDN}} generation={{.Generation}} kind={{.Kind}} (cert pending)
+` + metadataTmpl + `
 server {
     listen 80;
 {{if .HTTPProxyListen}}    listen {{.HTTPProxyListen}} proxy_protocol;
@@ -203,7 +253,8 @@ server {
         root {{.Webroot}};
     }
     location / {
-{{.SourcePolicy}}        proxy_pass http://{{.Target}};
+{{if .IngressMarker}}        if (!-f {{.IngressMarker}}) { return 503; }
+{{end}}{{.SourcePolicy}}        proxy_pass http://{{.Target}};
 {{.ProxyCommon}}    }
 }
 `))
@@ -258,8 +309,16 @@ func renderWithSourcePolicy(r model.Route, p Params, certPath, keyPath string, c
 	if err := ValidateWithNetwork(r, p.TargetNetwork); err != nil {
 		return "", err
 	}
+	metadataPattern, err := validateMetadata(p)
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateIngressMarker(p.IngressMarker); err != nil {
+		return "", err
+	}
 	d := vhostData{
 		FQDN:                  r.FQDN,
+		FQDNPattern:           regexp.QuoteMeta(strings.ToLower(r.FQDN)),
 		Generation:            r.Generation,
 		Target:                net.JoinHostPort(r.TargetIP, strconv.Itoa(r.TargetPort)),
 		HTTPSListen:           p.HTTPSListen,
@@ -271,6 +330,9 @@ func renderWithSourcePolicy(r model.Route, p Params, certPath, keyPath string, c
 		HTTPProxyListen:       p.HTTPProxyListen,
 		HTTPProxyTrustedPeers: p.HTTPProxyTrustedPeers,
 		HasSourcePolicy:       policy != nil,
+		HTTPMetadataListen:    p.HTTPMetadataListen,
+		MetadataPeerPattern:   metadataPattern,
+		IngressMarker:         p.IngressMarker,
 	}
 	if policy != nil || p.HTTPProxyListen != "" {
 		// A policy-aware backend receives only the verified peer, not a caller's
@@ -298,6 +360,41 @@ func renderWithSourcePolicy(r model.Route, p Params, certPath, keyPath string, c
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// ValidateIngressMarker prevents a configured path from injecting nginx syntax.
+func ValidateIngressMarker(path string) error {
+	if path == "" {
+		return nil
+	}
+	valid, _ := regexp.MatchString(`^/[A-Za-z0-9_./-]+$`, path)
+	if !valid || filepath.Clean(path) != path || path == "/" {
+		return fmt.Errorf("ingress marker must be one clean absolute file path")
+	}
+	return nil
+}
+
+func validateMetadata(p Params) (string, error) {
+	if p.HTTPMetadataListen == "" && len(p.HTTPMetadataTrustedPeers) == 0 {
+		return "", nil
+	}
+	listen, err := netip.ParseAddrPort(p.HTTPMetadataListen)
+	if err != nil || listen.String() != p.HTTPMetadataListen || listen.Port() < 1024 ||
+		listen.Addr().IsUnspecified() || listen.Addr().IsMulticast() || listen.Addr().Is4In6() || listen.Addr().Zone() != "" ||
+		p.HTTPMetadataListen == p.HTTPSListen || p.HTTPMetadataListen == p.HTTPProxyListen ||
+		len(p.HTTPMetadataTrustedPeers) == 0 || len(p.HTTPMetadataTrustedPeers) > 16 {
+		return "", fmt.Errorf("HTTP metadata requires a distinct explicit listener and trusted peers")
+	}
+	seen := map[netip.Addr]bool{}
+	var patterns []string
+	for _, peer := range p.HTTPMetadataTrustedPeers {
+		if !peer.IsValid() || peer.IsUnspecified() || peer.IsMulticast() || peer.Is4In6() || peer.Zone() != "" || seen[peer] {
+			return "", fmt.Errorf("HTTP metadata trusted peer is invalid or duplicated")
+		}
+		seen[peer] = true
+		patterns = append(patterns, regexp.QuoteMeta(peer.String()))
+	}
+	return strings.Join(patterns, "|"), nil
 }
 
 // targetNet is the user-VM network. Every proxy target must live inside it: the

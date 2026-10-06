@@ -279,7 +279,7 @@ func requestTestNginxProtocol(t *testing.T, address, host, path, proxySource, fo
 	}
 	if useTLS {
 		// The locally generated certificate exists only for this isolated test.
-		conn = tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		conn = tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: host})
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://"+host+path, nil)
 	if err != nil {
