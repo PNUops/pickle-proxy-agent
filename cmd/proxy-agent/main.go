@@ -38,14 +38,17 @@ func main() {
 	}
 
 	params := render.Params{
-		HTTPSListen:           cfg.HTTPSListen,
-		TargetNetwork:         cfg.TargetNetwork,
-		HTTPProxyListen:       cfg.HTTPProxyListen,
-		HTTPProxyTrustedPeers: cfg.HTTPProxyTrustedPeers,
-		LECertRef:             cfg.LECertRef,
-		WildcardCerts:         cfg.WildcardCerts,
-		Webroot:               cfg.Webroot,
-		SiteLimits:            cfg.SiteLimits,
+		HTTPSListen:              cfg.HTTPSListen,
+		TargetNetwork:            cfg.TargetNetwork,
+		HTTPProxyListen:          cfg.HTTPProxyListen,
+		HTTPProxyTrustedPeers:    cfg.HTTPProxyTrustedPeers,
+		HTTPMetadataListen:       cfg.HTTPMetadataListen,
+		HTTPMetadataTrustedPeers: cfg.HTTPMetadataTrustedPeers,
+		IngressMarker:            cfg.IngressMarker,
+		LECertRef:                cfg.LECertRef,
+		WildcardCerts:            cfg.WildcardCerts,
+		Webroot:                  cfg.Webroot,
+		SiteLimits:               cfg.SiteLimits,
 	}
 	ng, err := nginx.NewVerified(cfg.NginxBin, cfg.ExecTimeout, cfg.NginxDir)
 	if err != nil {
