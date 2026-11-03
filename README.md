@@ -25,7 +25,7 @@ nginx 구성 확인용으로 예약해요. 도메인 목록의 정리 대상에 
 
 ## 주요 기능
 
-플랫폼은 VM 신청·승인·생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
+플랫폼은 VM 신청과 승인, 생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
 삭제까지를 다뤄요. 이 레포지토리가 맡는 부분은 아래와 같아요.
 
 - **도메인 공개 적용**: 사용자가 콘솔에서 공개한 도메인이 실제로 VM의 웹 서비스에 닿도록
@@ -82,9 +82,9 @@ vhost로 바꾸는 2단계 렌더를 사용해요. 발급이 실패해도 적용
 내부 브리지 주소(`172.30.1.10:9443`)에만 바인드해요. 이 주소로 향하는 DNAT이 없으므로
 외부에서는 도달할 수 없어요.
 
-- `POST /apply` — 단일 FQDN의 설정 전체를 받아 vhost를 렌더하거나 지워요
-- `POST /sync-all` — 전체 스냅샷으로 세트를 재렌더하고, 매니페스트에 없는 vhost는 정리해요
-- `GET /status` — 헬스, FQDN별 적용 세대, 커스텀 도메인 인증서 상태
+- `POST /apply`: 단일 FQDN의 설정 전체를 받아 vhost를 렌더하거나 지워요
+- `POST /sync-all`: 전체 스냅샷으로 세트를 재렌더하고, 매니페스트에 없는 vhost는 정리해요
+- `GET /status`: 헬스, FQDN별 적용 세대, 커스텀 도메인 인증서 상태
 
 각 `/apply` 요청과 `/sync-all.routes[]` 항목은 선택적으로 다음 필드를 받아요.
 
@@ -100,7 +100,7 @@ vhost로 바꾸는 2단계 렌더를 사용해요. 발급이 실패해도 적용
 
 `GET /status`의 `capabilities`는 `source-acl-v1`을 포함해요. 호출자는 해당 capability를
 확인한 에이전트에만 정책을 전송해야 해요. 지원 광고와 적용 세대는 설정 확인이며,
-실제 외부 허용·거부 경로의 검증을 대신하지 않아요.
+실제 외부 허용과 거부 경로의 검증을 대신하지 않아요.
 
 에이전트 쪽에는 출발지 정책을 따로 켜는 스위치가 없어요. 이 바이너리를 배포한 뒤
 현재 `/status`에서 capability를 확인하고, 그 다음 API producer를 활성화해요. 전용 HTTP
@@ -132,7 +132,7 @@ HTTP 중계가 필요하면 일반 `:80`과 구분한 PROXY 수신 주소와 신
 구성 확인 socket의 로컬 접근은 include 디렉터리 권한을 따라요. 이 디렉터리는 에이전트
 소유여야 하고 group/other 쓰기를 허용하면 시작을 거부해요. 운영 환경에서는 root 소유로
 보호하고 nginx master가 해당 디렉터리에서 Unix socket을 만들 수 있어야 해요.
-예약 파일·socket은 nginx가 사용하는 동안 임의로 지우지 않아요.
+예약 파일과 socket은 nginx가 사용하는 동안 임의로 지우지 않아요.
 
 공개된 사이트의 vhost에는 요청 빈도와 동시 연결 상한이 함께 들어가요. 상한은 방문자
 주소 단위로 걸리고, 인증서 발급 중에 잠깐 올라가는 챌린지 전용 vhost는 대상이 아니에요.
@@ -147,7 +147,7 @@ Go 1.26이 필요해요. `verify.sh`는 `gofmt -l`로 포맷도 확인해요.
 
 격리된 nginx 테스트 환경에서는 `PICKLE_TEST_NGINX_BIN`을 해당 바이너리 경로로 지정해
 `go test ./internal/render -run TestSourcePolicyNginx`를 실행할 수 있어요. 실제 HTTP/TLS
-허용·거부, backend의 전달 헤더와 reload 중 활성 응답 보존을 확인해요.
+허용과 거부, backend의 전달 헤더와 reload 중 활성 응답 보존을 확인해요.
 격리 환경에 비어 있는 `:80`이 있으면 `go test ./internal/manager -run TestReloadProof`로
 점유된 신규 포트의 적용 거부, 기존 구성 복원과 같은 세대 재시도를 확인할 수 있어요.
 
@@ -176,7 +176,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | `PICKLE_PROXY_AGENT_ALLOWED_SRC` | 허용 소스 IP 목록. 빈 집합이면 전원 거부 | `172.30.1.20` |
 | `PICKLE_PROXY_AGENT_WILDCARD_CERTS` | 플랫폼 루트 도메인별 와일드카드 인증서. `<루트>=<인증서>:<키>`를 쉼표로 나열해요. 형식이 잘못되면 부팅을 거부해요 | 없음 |
 | `PICKLE_PROXY_AGENT_SITE_LIMITS` | 공개된 사이트의 vhost에 요청 상한과 연결 상한을 넣어요. `on`/`off`(`true`/`false`도 받아요) 외의 값은 부팅을 거부해요 | `on` |
-| `PICKLE_PROXY_AGENT_LE_CERT_REF` | 커스텀 도메인을 뜻하는 `certRef` 값. 호출하는 쪽이 쓰는 값과 **정확히 같아야** 해요 — 한쪽만 바꾸면 커스텀 도메인 적용이 전부 422가 돼요 | `letsencrypt` |
+| `PICKLE_PROXY_AGENT_LE_CERT_REF` | 커스텀 도메인을 뜻하는 `certRef` 값. 호출하는 쪽이 쓰는 값과 **정확히 같아야** 해요. 한쪽만 바꾸면 커스텀 도메인 적용이 전부 422가 돼요 | `letsencrypt` |
 
 <details>
 <summary>전체 변수 표와 대상 호스트 사전 조건</summary>
@@ -184,7 +184,7 @@ scripts/              verify, systemd 유닛, nginx 베이스 설정
 | 변수 | 의미 | 기본값 |
 |---|---|---|
 | `PICKLE_PROXY_AGENT_NGINX_DIR` | 에이전트 소유 include 디렉터리 | `/etc/nginx/pickle.d` |
-| `PICKLE_PROXY_AGENT_STATE_FILE` | 세대·인증서 상태 JSON | `/var/lib/pickle-proxy-agent/state.json` |
+| `PICKLE_PROXY_AGENT_STATE_FILE` | 세대와 인증서 상태 JSON | `/var/lib/pickle-proxy-agent/state.json` |
 | `PICKLE_PROXY_AGENT_NGINX_BIN` | nginx 바이너리 | `nginx` |
 | `PICKLE_PROXY_AGENT_HTTPS_LISTEN` | 종단 vhost의 내부 HTTPS 리슨. `stream{}`이 :443을 소유해요 | `127.0.0.1:8443` |
 | `PICKLE_PROXY_AGENT_HTTP_METADATA_LISTEN` | 원격 진입부의 Host 확인과 HTTP-01에 사용하는 별도 plain HTTP 주소. 명시적인 IP와 비특권 포트만 허용해요 | 빈 값 (미사용) |
@@ -221,7 +221,7 @@ token만 webroot에서 제공하며 VM 백엔드로 요청을 전달하지 않�
 동일 metadata 주소에는 별도의 default vhost가 있어야 하며 알려지지 않은 Host에
 404를 반환해야 해요. HTTPS 주소의 default vhost는 알려지지 않은 SNI의
 handshake를 거부해야 해요. 진입부가 공개 HTTP를 HTTPS로 리다이렉트할 때는
-고정 metadata URI와 Host만 조회하고, 사용자 URI·query·자격증명·body를 이
+고정 metadata URI와 Host만 조회하고, 사용자 URI와 query, 자격증명, body를 이
 plain HTTP 연결로 전달하지 않아요.
 
 Ingress marker를 지정하면 HTTPS와 인증서 발급 중의 HTTP 백엔드 접근을 같은
@@ -233,6 +233,8 @@ Ingress marker를 지정하면 HTTPS와 인증서 발급 중의 HTTP 백엔드 �
 설치라면 그 토큰 값을 API 쪽 환경으로 복사해야 해요.
 
 </details>
+
+최종 갱신: 2026-11-03
 
 ## 전체 아키텍처
 
